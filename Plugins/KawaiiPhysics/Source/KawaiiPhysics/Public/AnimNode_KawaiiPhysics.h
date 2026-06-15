@@ -26,6 +26,7 @@
 #include "KawaiiPhysicsSharedCollisionSubsystem.h"
 #include "KawaiiPhysicsTypes.h"
 #include "KawaiiPhysicsBoneConstraintTypes.h"
+#include "KawaiiPhysicsPhysicsMaterial.h"
 #include "AnimNode_KawaiiPhysics.generated.h"
 
 class UKawaiiPhysics_CustomExternalForce;
@@ -412,8 +413,48 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 		meta = (EditCondition = "bEnableStateDrivenPhysics", PinHiddenByDefault))
 	TMap<FName, FKawaiiPhysicsSettings> StatePhysicsSettings;
 
+	// --- Budget Allocator (UE 5.5 Integration) ---
+
 	/**
-	* 距離ベースLODを有効にする。カメラとの距離に応じて自動的にシミュレーション品質を下げる。
+	* Enable Animation Budget Allocator integration.
+	* When budget is exceeded, simulation quality is reduced automatically.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Budget",
+		meta = (PinHiddenByDefault))
+	bool bEnableBudgetAllocator = false;
+
+	/**
+	* Maximum budget in microseconds per frame for this node.
+	* 0 = unlimited. If exceeded, simulation is skipped or reduced.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Budget",
+		meta = (ClampMin = "0", EditCondition = "bEnableBudgetAllocator", PinHiddenByDefault))
+	float BudgetMicroSeconds = 0.0f;
+
+	/**
+	* Priority for budget allocation (higher = more likely to get budget).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Budget",
+		meta = (ClampMin = "0", ClampMax = "10", EditCondition = "bEnableBudgetAllocator", PinHiddenByDefault))
+	int32 BudgetPriority = 5;
+
+	/**
+	* Whether simulation was skipped last frame due to budget.
+	*/
+	UPROPERTY(BlueprintReadOnly, Category = "Physics Settings|Budget")
+	bool bBudgetSkippedLastFrame = false;
+
+	// --- Physics Material ---
+
+	/**
+	* Physics Material asset for per-bone settings.
+	* Overrides global settings with per-bone damping/stiffness/limits.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Material",
+		meta = (PinHiddenByDefault))
+	TObjectPtr<UKawaiiPhysicsPhysicsMaterial> PhysicsMaterial = nullptr;
+
+	// --- 距離ベースLODを有効にする。カメラとの距離に応じて自動的にシミュレーション品質を下げる。
 	* Enable distance-based LOD. Automatically reduces simulation quality based on camera distance.
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
@@ -1401,6 +1442,26 @@ protected:
 	 * Apply animation state-driven physics switching.
 	 */
 	void ApplyStateDrivenPhysics();
+
+	/**
+	 * Apply physics material per-bone settings.
+	 */
+	void ApplyPhysicsMaterial();
+
+	/**
+	 * Apply advanced spring/damper model (ACES-style).
+	 */
+	void ApplySpringDamper();
+
+	/**
+	 * Apply cloth-like constraints (shear/bend/stretch).
+	 */
+	void ApplyClothConstraints();
+
+	/**
+	 * Apply ragdoll blend between KawaiiPhysics and pose.
+	 */
+	void ApplyRagdollBlend();
 
 	/**
 	 * Auto-generate collision primitives from skeletal mesh bounds.

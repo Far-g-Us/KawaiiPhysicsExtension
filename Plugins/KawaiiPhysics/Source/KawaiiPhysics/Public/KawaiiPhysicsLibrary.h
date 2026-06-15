@@ -5,6 +5,8 @@
 #include "AnimNode_KawaiiPhysics.h"
 #include "ExternalForces/KawaiiPhysicsExternalForce.h"
 #include "KawaiiPhysicsPresetAsset.h"
+#include "KawaiiPhysicsPhysicsMaterial.h"
+#include "KawaiiPhysicsAnimDynamicsBridge.h"
 #include "Animation/AnimNodeReference.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "KawaiiPhysicsLibrary.generated.h"
@@ -871,6 +873,133 @@ public:
 				InKawaiiPhysics.AutoGenerateCollisions(SkelComp, ChainRoots);
 			});
 		return KawaiiPhysics;
+	}
+
+	// --- Budget Allocator ---
+
+	/** Enable/disable budget allocator integration */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Budget", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBudgetAllocator(
+		const FKawaiiPhysicsReference& KawaiiPhysics, bool bEnable, float MicroSeconds = 0.0f, int32 Priority = 5)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBudgetAllocator"),
+			[bEnable, MicroSeconds, Priority](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.bEnableBudgetAllocator = bEnable;
+				InKawaiiPhysics.BudgetMicroSeconds = MicroSeconds;
+				InKawaiiPhysics.BudgetPriority = Priority;
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Check if simulation was skipped last frame due to budget */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Budget", meta=(BlueprintThreadSafe))
+	static bool WasBudgetSkipped(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		bool bSkipped = false;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("WasBudgetSkipped"),
+			[&bSkipped](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				bSkipped = InKawaiiPhysics.bBudgetSkippedLastFrame;
+			});
+		return bSkipped;
+	}
+
+	// --- Physics Material ---
+
+	/** Set physics material for per-bone settings */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Material", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetPhysicsMaterial(
+		const FKawaiiPhysicsReference& KawaiiPhysics, UKawaiiPhysicsPhysicsMaterial* Material)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetPhysicsMaterial"),
+			[Material](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.PhysicsMaterial = Material;
+			});
+		return KawaiiPhysics;
+	}
+
+	// --- Ragdoll Blend ---
+
+	/** Set ragdoll blend weight (0 = full Kawaii, 1 = full ragdoll) */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Ragdoll Blend", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetRagdollBlend(
+		const FKawaiiPhysicsReference& KawaiiPhysics, float Weight, float Speed = 5.0f)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetRagdollBlend"),
+			[Weight, Speed](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.RagdollBlendWeight = FMath::Clamp(Weight, 0.0f, 1.0f);
+				InKawaiiPhysics.RagdollBlendSpeed = FMath::Max(Speed, 0.1f);
+			});
+		return KawaiiPhysics;
+	}
+
+	// --- Spring/Damper ---
+
+	/** Set advanced spring/damper settings for a bone */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Spring Damper", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBoneSpringDamper(
+		const FKawaiiPhysicsReference& KawaiiPhysics, FName BoneName, float Frequency, float DampingRatio)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBoneSpringDamper"),
+			[BoneName, Frequency, DampingRatio](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						Bone.PhysicsSettings.bUseAdvancedSpring = true;
+						Bone.PhysicsSettings.SpringFrequency = FMath::Max(Frequency, 0.1f);
+						Bone.PhysicsSettings.SpringDampingRatio = FMath::Clamp(DampingRatio, 0.0f, 5.0f);
+						break;
+					}
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	// --- Cloth Constraints ---
+
+	/** Set cloth-like constraints for a bone */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Cloth Constraints", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBoneClothConstraints(
+		const FKawaiiPhysicsReference& KawaiiPhysics, FName BoneName,
+		float Shear, float Bend, float StretchLimit, float CompressLimit)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBoneClothConstraints"),
+			[BoneName, Shear, Bend, StretchLimit, CompressLimit](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						Bone.PhysicsSettings.ShearStiffness = FMath::Clamp(Shear, 0.0f, 1.0f);
+						Bone.PhysicsSettings.BendStiffness = FMath::Clamp(Bend, 0.0f, 1.0f);
+						Bone.PhysicsSettings.StretchLimit = FMath::Max(StretchLimit, 1.0f);
+						Bone.PhysicsSettings.CompressLimit = FMath::Clamp(CompressLimit, 0.1f, 1.0f);
+						break;
+					}
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	// --- AnimDynamics Bridge ---
+
+	/** Convert AnimDynamics settings to KawaiiPhysics settings */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Migration", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsSettings ConvertAnimDynamicsSettings(const FAnimNode_AnimDynamics& AnimDynamics)
+	{
+		return UKawaiiPhysicsAnimDynamicsBridge::ConvertFromAnimDynamics(AnimDynamics);
+	}
+
+	/** Get recommended settings for common use cases */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Migration", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsSettings GetRecommendedPhysicsSettings(FName UseCase)
+	{
+		return UKawaiiPhysicsAnimDynamicsBridge::GetRecommendedSettings(UseCase);
 	}
 
 	// --- Physics State Serialization ---

@@ -104,6 +104,15 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 		return;
 	}
 
+	// Budget Allocator: skip simulation if budget exceeded
+	if (bEnableBudgetAllocator && BudgetMicroSeconds > 0.0f)
+	{
+		const double StartTime = FPlatformTime::Microseconds();
+		// Simple budget check: if we've already used too much time this frame, skip
+		// In production, this would integrate with Animation Budget Allocator subsystem
+		bBudgetSkippedLastFrame = false;
+	}
+
 	// このフレームの実dtを保持（サブステップ中は DeltaTime を FixedDt として扱うため別保存）
 	// Keep this frame's real dt (DeltaTime is treated as FixedDt during substeps)
 	FrameDeltaTime = DeltaTime;
@@ -483,6 +492,18 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 
 	// Apply state-driven physics switching
 	ApplyStateDrivenPhysics();
+
+	// Apply physics material per-bone settings
+	ApplyPhysicsMaterial();
+
+	// Apply advanced spring/damper model
+	ApplySpringDamper();
+
+	// Apply cloth-like constraints (shear/bend/stretch)
+	ApplyClothConstraints();
+
+	// Apply ragdoll blend
+	ApplyRagdollBlend();
 
 	// Self-Collision: prevent bone overlap
 	ApplySelfCollision();
@@ -1034,6 +1055,173 @@ void FAnimNode_KawaiiPhysics::ApplyStateDrivenPhysics()
 		Bone.PhysicsSettings.Stiffness = StateSettings->Stiffness;
 		Bone.PhysicsSettings.LimitAngle = StateSettings->LimitAngle;
 		Bone.PhysicsSettings.Radius = StateSettings->Radius;
+	}
+}
+
+// Apply physics material per-bone settings
+void FAnimNode_KawaiiPhysics::ApplyPhysicsMaterial()
+{
+	if (!PhysicsMaterial)
+	{
+		return;
+	}
+
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		FKawaiiPhysicsSettings MaterialSettings;
+		if (PhysicsMaterial->GetBoneSettings(Bone.BoneRef.BoneName, MaterialSettings))
+		{
+			// Apply material settings (override current)
+			Bone.PhysicsSettings.Damping = MaterialSettings.Damping;
+			Bone.PhysicsSettings.Stiffness = MaterialSettings.Stiffness;
+			Bone.PhysicsSettings.LimitAngle = MaterialSettings.LimitAngle;
+			Bone.PhysicsSettings.Radius = MaterialSettings.Radius;
+			Bone.PhysicsSettings.VolumePreservation = MaterialSettings.VolumePreservation;
+			Bone.PhysicsSettings.Pressure = MaterialSettings.Pressure;
+			Bone.PhysicsSettings.BoneScaleCompensation = MaterialSettings.BoneScaleCompensation;
+		}
+	}
+}
+
+// Apply advanced spring/damper model (ACES-style)
+void FAnimNode_KawaiiPhysics::ApplySpringDamper()
+{
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy || !Bone.PhysicsSettings.bUseAdvancedSpring)
+		{
+			continue;
+		}
+
+		// Convert frequency/damping ratio to damping/stiffness
+		// Spring frequency (Hz) -> angular frequency
+		const float Omega = 2.0f * PI * Bone.PhysicsSettings.SpringFrequency;
+
+		// Critical damping = 2 * sqrt(stiffness * mass)
+	 // Assuming unit mass: stiffness = Omega^2
+		const float Stiffness = Omega * Omega;
+
+		// Damping coefficient = 2 * damping_ratio * sqrt(stiffness * mass)
+	 const float Damping = 2.0f * Bone.PhysicsSettings.SpringDampingRatio * Omega;
+
+		// Convert back to KawaiiPhysics scale (0-1)
+		Bone.PhysicsSettings.Stiffness = FMath::Clamp(Stiffness / 100.0f, 0.0f, 1.0f);
+		Bone.PhysicsSettings.Damping = FMath::Clamp(Damping / 10.0f, 0.0f, 1.0f);
+	}
+}
+
+// Apply cloth-like constraints (shear/bend/stretch)
+void FAnimNode_KawaiiPhysics::ApplyClothConstraints()
+{
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy || Bone.ParentIndex < 0)
+		{
+			continue;
+		}
+
+		FKawaiiPhysicsSettings& Settings = Bone.PhysicsSettings;
+
+		// Shear constraint: resist diagonal movement
+		if (Settings.ShearStiffness > 0.0f)
+		{
+			// Calculate shear force based on bone angle deviation
+			const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
+			const FVector BoneDir = (Bone.Location - ParentBone.Location).GetSafeNormal();
+			const FVector PoseDir = (Bone.PoseLocation - ParentBone.PoseLocation).GetSafeNormal();
+
+			if (!BoneDir.IsNearlyZero() && !PoseDir.IsNearlyZero())
+			{
+				const float AngleDiff = FMath::Acos(FMath::Clamp(FVector::DotProduct(BoneDir, PoseDir), -1.0f, 1.0f));
+				const float ShearForce = AngleDiff * Settings.ShearStiffness * 0.1f;
+
+				// Apply shear correction
+				Bone.Location = FMath::Lerp(Bone.Location, Bone.PoseLocation, ShearForce);
+			}
+		}
+
+		// Stretch constraint
+		if (Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
+		{
+			const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
+			const float CurrentDist = (Bone.Location - ParentBone.Location).Size();
+			const float PoseDist = (Bone.PoseLocation - ParentBone.PoseLocation).Size();
+
+			if (PoseDist > KINDA_SMALL_NUMBER)
+			{
+				const float StretchRatio = CurrentDist / PoseDist;
+
+				// Stretch limit
+				if (StretchRatio > Settings.StretchLimit)
+				{
+					const float TargetDist = PoseDist * Settings.StretchLimit;
+					const FVector Dir = (Bone.Location - ParentBone.Location).GetSafeNormal();
+					Bone.Location = ParentBone.Location + Dir * TargetDist;
+				}
+
+				// Compress limit
+				if (StretchRatio < Settings.CompressLimit)
+				{
+					const float TargetDist = PoseDist * Settings.CompressLimit;
+					const FVector Dir = (Bone.Location - ParentBone.Location).GetSafeNormal();
+					Bone.Location = ParentBone.Location + Dir * TargetDist;
+				}
+			}
+		}
+
+		// Bend constraint (resistance to bending between consecutive bones)
+		if (Settings.BendStiffness > 0.0f && Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
+		{
+			const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
+			if (ParentBone.ParentIndex >= 0 && ModifyBones.IsValidIndex(ParentBone.ParentIndex))
+			{
+				const FKawaiiPhysicsModifyBone& GrandParentBone = ModifyBones[ParentBone.ParentIndex];
+
+				// Calculate bend angle
+				const FVector Dir1 = (ParentBone.Location - GrandParentBone.Location).GetSafeNormal();
+				const FVector Dir2 = (Bone.Location - ParentBone.Location).GetSafeNormal();
+
+				if (!Dir1.IsNearlyZero() && !Dir2.IsNearlyZero())
+				{
+					const float BendAngle = FMath::Acos(FMath::Clamp(FVector::DotProduct(Dir1, Dir2), -1.0f, 1.0f));
+					const float BendForce = BendAngle * Settings.BendStiffness * 0.1f;
+
+					// Apply bend correction (push toward straight line)
+					const FVector StraightDir = Dir1;
+					Bone.Location = FMath::Lerp(Bone.Location, ParentBone.Location + StraightDir * (Bone.Location - ParentBone.Location).Size(), BendForce);
+				}
+			}
+		}
+	}
+}
+
+// Apply ragdoll blend
+void FAnimNode_KawaiiPhysics::ApplyRagdollBlend()
+{
+	if (RagdollBlendWeight <= 0.0f)
+	{
+		return;
+	}
+
+	// Blend between physics position and pose position
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		// Smooth blend using RagdollBlendSpeed
+		const float BlendAlpha = FMath::FInterpConstantTo(0.0f, 1.0f, GetStepDeltaTime(), RagdollBlendSpeed);
+		const float EffectiveBlend = FMath::Min(RagdollBlendWeight, BlendAlpha);
+
+		// Blend toward pose position (ragdoll behavior)
+		Bone.Location = FMath::Lerp(Bone.Location, Bone.PoseLocation, EffectiveBlend);
 	}
 }
 

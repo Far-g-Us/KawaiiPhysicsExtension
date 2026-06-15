@@ -205,6 +205,73 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsSettings
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "BoneScaleCompensation > 0"), category = "KawaiiPhysics|BoneScaling")
 	int32 BoneScaleAxis = 0;
+
+	// --- Advanced Spring/Damper (ACES-style) ---
+
+	/**
+	* Enable advanced spring/damper model with frequency and damping ratio.
+	* When enabled, Damping/Stiffness are overridden by SpringFrequency/SpringDampingRatio.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "KawaiiPhysics|SpringDamper")
+	bool bUseAdvancedSpring = false;
+
+	/**
+	* Spring frequency in Hz (oscillations per second).
+	* Higher = faster oscillation. Typical range: 2-20 Hz.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.1", ClampMax = "50", EditCondition = "bUseAdvancedSpring"), Category = "KawaiiPhysics|SpringDamper")
+	float SpringFrequency = 5.0f;
+
+	/**
+	* Spring damping ratio (0 = undamped, 1 = critically damped, >1 = overdamped).
+	* ACES uses ~0.7 for natural-feeling spring response.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", ClampMax = "5", EditCondition = "bUseAdvancedSpring"), Category = "KawaiiPhysics|SpringDamper")
+	float SpringDampingRatio = 0.7f;
+
+	// --- Cloth-like Constraints ---
+
+	/**
+	* Shear stiffness: resistance to diagonal deformation.
+	* Higher = more rigid diagonal. 0 = no shear resistance.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", ClampMax = "1"), Category = "KawaiiPhysics|ClothConstraints")
+	float ShearStiffness = 0.0f;
+
+	/**
+	* Bend stiffness: resistance to bending between bones.
+	* Higher = less bending. 0 = no bend resistance.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", ClampMax = "1"), Category = "KawaiiPhysics|ClothConstraints")
+	float BendStiffness = 0.0f;
+
+	/**
+	* Stretch limit: maximum stretch ratio before resistance.
+	* 1.0 = no stretch allowed, >1 = allows stretching.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1", ClampMax = "3"), Category = "KawaiiPhysics|ClothConstraints")
+	float StretchLimit = 2.0f;
+
+	/**
+	* Compress limit: minimum compression ratio before resistance.
+	* 1.0 = no compression allowed, <1 = allows compression.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.1", ClampMax = "1"), Category = "KawaiiPhysics|ClothConstraints")
+	float CompressLimit = 0.5f;
+
+	// --- Ragdoll Blend ---
+
+	/**
+	* Blend weight between KawaiiPhysics and ragdoll (0 = full Kawaii, 1 = full ragdoll).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", ClampMax = "1"), Category = "KawaiiPhysics|RagdollBlend")
+	float RagdollBlendWeight = 0.0f;
+
+	/**
+	* Speed of ragdoll blend transition.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.1", ClampMax = "20", EditCondition = "RagdollBlendWeight > 0"), Category = "KawaiiPhysics|RagdollBlend")
+	float RagdollBlendSpeed = 5.0f;
 };
 
 /**
