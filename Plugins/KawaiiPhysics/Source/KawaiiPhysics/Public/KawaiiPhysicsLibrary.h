@@ -356,6 +356,397 @@ public:
 
 	// --- Shared Collision ---
 
+	// --- Twist/Swing Limits ---
+
+	/** Set bUseTwistSwingLimits */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Twist Swing", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetUseTwistSwingLimits(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                      bool bUseTwistSwingLimits)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetbUseTwistSwingLimits"),
+			[bUseTwistSwingLimits](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.PhysicsSettings.bUseTwistSwingLimits = bUseTwistSwingLimits;
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Set TwistLimitAngle */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Twist Swing", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetTwistLimitAngle(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                  float TwistLimitAngle)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetTwistLimitAngle"),
+			[TwistLimitAngle](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.PhysicsSettings.TwistLimitAngle = FMath::Max(TwistLimitAngle, 0.0f);
+			});
+		return KawaiiPhysics;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Kawaii Physics|Twist Swing", meta=(BlueprintThreadSafe))
+	static float GetTwistLimitAngle(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		float Value = 0.0f;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetTwistLimitAngle"),
+			[&Value](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				Value = InKawaiiPhysics.PhysicsSettings.TwistLimitAngle;
+			});
+		return Value;
+	}
+
+	/** Set SwingLimitYAngle */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Twist Swing", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetSwingLimitYAngle(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                   float SwingLimitYAngle)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetSwingLimitYAngle"),
+			[SwingLimitYAngle](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.PhysicsSettings.SwingLimitYAngle = FMath::Max(SwingLimitYAngle, 0.0f);
+			});
+		return KawaiiPhysics;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Kawaii Physics|Twist Swing", meta=(BlueprintThreadSafe))
+	static float GetSwingLimitYAngle(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		float Value = 0.0f;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetSwingLimitYAngle"),
+			[&Value](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				Value = InKawaiiPhysics.PhysicsSettings.SwingLimitYAngle;
+			});
+		return Value;
+	}
+
+	/** Set SwingLimitZAngle */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Twist Swing", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetSwingLimitZAngle(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                   float SwingLimitZAngle)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetSwingLimitZAngle"),
+			[SwingLimitZAngle](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.PhysicsSettings.SwingLimitZAngle = FMath::Max(SwingLimitZAngle, 0.0f);
+			});
+		return KawaiiPhysics;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Kawaii Physics|Twist Swing", meta=(BlueprintThreadSafe))
+	static float GetSwingLimitZAngle(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		float Value = 0.0f;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetSwingLimitZAngle"),
+			[&Value](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				Value = InKawaiiPhysics.PhysicsSettings.SwingLimitZAngle;
+			});
+		return Value;
+	}
+
+	// --- Predictive Physics ---
+
+	/** Set PredictionScale (0.0 = no prediction, 1.0 = 1-frame prediction) */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Predictive", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetPredictionScale(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                  float PredictionScale)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetPredictionScale"),
+			[PredictionScale](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.PredictionScale = FMath::Clamp(PredictionScale, 0.0f, 5.0f);
+			});
+		return KawaiiPhysics;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Kawaii Physics|Predictive", meta=(BlueprintThreadSafe))
+	static float GetPredictionScale(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		float Value = 0.0f;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetPredictionScale"),
+			[&Value](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				Value = InKawaiiPhysics.PredictionScale;
+			});
+		return Value;
+	}
+
+	// --- Runtime Parameter Control ---
+
+	/** Enable or disable physics simulation on this node */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Control", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetPhysicsEnabled(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                 bool bEnabled)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetPhysicsEnabled"),
+			[bEnabled](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.bAllowWorldCollision = bEnabled;
+				if (!bEnabled)
+				{
+					// Reset dynamics when disabling physics
+					InKawaiiPhysics.ResetDynamics(ETeleportType::TeleportPhysics);
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Set Damping for a specific bone by name (runtime) */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Control", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBoneDamping(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                              FName BoneName, float Damping)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBoneDamping"),
+			[BoneName, Damping](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						Bone.PhysicsSettings.Damping = FMath::Clamp(Damping, 0.0f, 1.0f);
+						break;
+					}
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Set Stiffness for a specific bone by name (runtime) */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Control", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBoneStiffness(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                FName BoneName, float Stiffness)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBoneStiffness"),
+			[BoneName, Stiffness](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						Bone.PhysicsSettings.Stiffness = FMath::Clamp(Stiffness, 0.0f, 1.0f);
+						break;
+					}
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Set CollisionRadius for a specific bone by name (runtime) */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Control", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBoneCollisionRadius(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                     FName BoneName, float Radius)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBoneCollisionRadius"),
+			[BoneName, Radius](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						Bone.PhysicsSettings.Radius = FMath::Max(Radius, 0.0f);
+						break;
+					}
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Set LimitAngle for a specific bone by name (runtime) */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Control", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBoneLimitAngle(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                 FName BoneName, float LimitAngle)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBoneLimitAngle"),
+			[BoneName, LimitAngle](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						Bone.PhysicsSettings.LimitAngle = FMath::Max(LimitAngle, 0.0f);
+						break;
+					}
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	// --- Physics State Serialization ---
+
+	// --- Runtime Collision Primitives ---
+
+	/** Add a spherical collision at runtime */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Collision", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AddRuntimeSphereCollision(
+		const FKawaiiPhysicsReference& KawaiiPhysics,
+		FName BoneName, FVector Offset, float Radius, bool bOuter = true)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AddRuntimeSphereCollision"),
+			[BoneName, Offset, Radius, bOuter](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				FSphericalLimit Sphere;
+				Sphere.DrivingBone.BoneName = BoneName;
+				Sphere.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
+					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
+				Sphere.OffsetLocation = Offset;
+				Sphere.Radius = Radius;
+				Sphere.LimitType = bOuter ? ESphericalLimitType::Outer : ESphericalLimitType::Inner;
+				Sphere.bEnable = true;
+				InKawaiiPhysics.SphericalLimits.Add(Sphere);
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Add a capsule collision at runtime */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Collision", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AddRuntimeCapsuleCollision(
+		const FKawaiiPhysicsReference& KawaiiPhysics,
+		FName BoneName, FVector Offset, float Radius, float Length)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AddRuntimeCapsuleCollision"),
+			[BoneName, Offset, Radius, Length](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				FCapsuleLimit Capsule;
+				Capsule.DrivingBone.BoneName = BoneName;
+				Capsule.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
+					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
+				Capsule.OffsetLocation = Offset;
+				Capsule.Radius = Radius;
+				Capsule.Length = Length;
+				Capsule.bEnable = true;
+				InKawaiiPhysics.CapsuleLimits.Add(Capsule);
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Add a box collision at runtime */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Collision", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AddRuntimeBoxCollision(
+		const FKawaiiPhysicsReference& KawaiiPhysics,
+		FName BoneName, FVector Offset, FVector Extent)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AddRuntimeBoxCollision"),
+			[BoneName, Offset, Extent](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				FBoxLimit Box;
+				Box.DrivingBone.BoneName = BoneName;
+				Box.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
+					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
+				Box.OffsetLocation = Offset;
+				Box.Extent = Extent;
+				Box.bEnable = true;
+				InKawaiiPhysics.BoxLimits.Add(Box);
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Add a planar collision at runtime */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Collision", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AddRuntimePlaneCollision(
+		const FKawaiiPhysicsReference& KawaiiPhysics,
+		FName BoneName, FVector Offset, FRotator Rotation)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AddRuntimePlaneCollision"),
+			[BoneName, Offset, Rotation](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				FPlanarLimit Plane;
+				Plane.DrivingBone.BoneName = BoneName;
+				Plane.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
+					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
+				Plane.OffsetLocation = Offset;
+				Plane.OffsetRotation = Rotation;
+				Plane.bEnable = true;
+				InKawaiiPhysics.PlanarLimits.Add(Plane);
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Clear all runtime-added collision primitives */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Collision", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference ClearRuntimeCollisions(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("ClearRuntimeCollisions"),
+			[](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.SphericalLimits.Empty();
+				InKawaiiPhysics.CapsuleLimits.Empty();
+				InKawaiiPhysics.BoxLimits.Empty();
+				InKawaiiPhysics.PlanarLimits.Empty();
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Get count of active collision primitives */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Collision", meta=(BlueprintThreadSafe))
+	static void GetCollisionPrimitiveCounts(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                       int32& Spheres, int32& Capsules, int32& Boxes, int32& Planes)
+	{
+		Spheres = 0; Capsules = 0; Boxes = 0; Planes = 0;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetCollisionPrimitiveCounts"),
+			[&Spheres, &Capsules, &Boxes, &Planes](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				Spheres = InKawaiiPhysics.SphericalLimits.Num();
+				Capsules = InKawaiiPhysics.CapsuleLimits.Num();
+				Boxes = InKawaiiPhysics.BoxLimits.Num();
+				Planes = InKawaiiPhysics.PlanarLimits.Num();
+			});
+	}
+
+	// --- Physics State Serialization ---
+
+	/** Save the current physics state (bone locations and prev locations) */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|State", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsSavedState SavePhysicsState(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		FKawaiiPhysicsSavedState State;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SavePhysicsState"),
+			[&State](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (const FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (!Bone.bDummy && !Bone.bBridgeDummy)
+					{
+						State.BoneLocations.Add(Bone.BoneRef.BoneName, Bone.Location);
+						State.BonePrevLocations.Add(Bone.BoneRef.BoneName, Bone.PrevLocation);
+					}
+				}
+				State.bIsValid = true;
+			});
+		return State;
+	}
+
+	/** Restore a previously saved physics state */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|State", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference RestorePhysicsState(const FKawaiiPhysicsReference& KawaiiPhysics,
+	                                                   UPARAM(ref) FKawaiiPhysicsSavedState& State)
+	{
+		if (!State.bIsValid)
+		{
+			return KawaiiPhysics;
+		}
+
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("RestorePhysicsState"),
+			[&State](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (const FVector* Loc = State.BoneLocations.Find(Bone.BoneRef.BoneName))
+					{
+						Bone.Location = *Loc;
+					}
+					if (const FVector* PrevLoc = State.BonePrevLocations.Find(Bone.BoneRef.BoneName))
+					{
+						Bone.PrevLocation = *PrevLoc;
+					}
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	// --- Shared Collision ---
+
 	/**
 	 * このノードをコリジョン共有のSourceにするかを設定
 	 * Set whether this node acts as a shared collision source

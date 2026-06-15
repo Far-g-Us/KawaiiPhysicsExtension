@@ -487,7 +487,9 @@ void FAnimNode_KawaiiPhysics::AdjustBySphereCollision(FKawaiiPhysicsModifyBone& 
 			const float Dist = FMath::Sqrt(DistSq);
 			if (Dist > KINDA_SMALL_NUMBER)
 			{
-				Bone.Location += (LimitDistanceOuter - Dist) * (Delta / Dist);
+				const FVector CollisionNormal = Delta / Dist;
+				Bone.Location += (LimitDistanceOuter - Dist) * CollisionNormal;
+				RecordBoneCollisionEvent(Bone.BoneRef.BoneName, Bone.Location, CollisionNormal);
 			}
 		}
 		else
@@ -529,7 +531,9 @@ void FAnimNode_KawaiiPhysics::AdjustByCapsuleCollision(FKawaiiPhysicsModifyBone&
 		if (DistSquared < LimitDistance * LimitDistance)
 		{
 			FVector ClosestPoint = FMath::ClosestPointOnSegment(Bone.Location, StartPoint, EndPoint);
-			Bone.Location = ClosestPoint + (Bone.Location - ClosestPoint).GetSafeNormal() * LimitDistance;
+			const FVector CollisionNormal = (Bone.Location - ClosestPoint).GetSafeNormal();
+			Bone.Location = ClosestPoint + CollisionNormal * LimitDistance;
+			RecordBoneCollisionEvent(Bone.BoneRef.BoneName, Bone.Location, CollisionNormal);
 		}
 	}
 }
@@ -572,6 +576,8 @@ void FAnimNode_KawaiiPhysics::AdjustByBoxCollision(FKawaiiPhysicsModifyBone& Bon
 				FVector PushOutDirection = PushOutVector.GetSafeNormal();
 				FVector NewLocalSphereCenter = ClosestPoint + PushOutDirection * SphereRadius;
 				Bone.Location = BoxTransform.TransformPosition(NewLocalSphereCenter);
+				const FVector WorldNormal = BoxTransform.TransformVectorNoScale(PushOutDirection);
+				RecordBoneCollisionEvent(Bone.BoneRef.BoneName, Bone.Location, WorldNormal);
 			}
 		}
 	}
@@ -602,21 +608,125 @@ void FAnimNode_KawaiiPhysics::AdjustByAngleLimit(
 	FKawaiiPhysicsModifyBone& Bone,
 	const FKawaiiPhysicsModifyBone& ParentBone)
 {
-	if (Bone.PhysicsSettings.LimitAngle == 0.0f)
+	if (Bone.PhysicsSettings.bUseTwistSwingLimits)
 	{
-		return;
+		// Twist/Swing decomposition mode
+		if (Bone.TwistLimitAngle == 0.0f && Bone.SwingLimitYAngle == 0.0f && Bone.SwingLimitZAngle == 0.0f)
+		{
+			return;
+		}
+
+		const FVector BoneDir = (Bone.Location - ParentBone.Location).GetSafeNormal();
+		const FVector PoseDir = (Bone.PoseLocation - ParentBone.PoseLocation).GetSafeNormal();
+
+		if (BoneDir.IsNearlyZero() || PoseDir.IsNearlyZero())
+		{
+			return;
+		}
+
+		// Build local frame from pose direction
+		// Forward axis = pose direction (bone chain direction)
+		const FVector Forward = PoseDir;
+		// Build a consistent right/up from the forward axis
+		const FVector Arbitrary = (FMath::Abs(FVector::DotProduct(Forward, FVector::UpVector)) < 0.99f)
+			? FVector::UpVector
+			: FVector::RightVector;
+		const FVector Right = FVector::CrossProduct(Forward, Arbitrary).GetSafeNormal();
+		const FVector Up = FVector::CrossProduct(Right, Forward).GetSafeNormal();
+
+		// Decompose the rotation from pose to current into twist + swing
+		const FQuat PoseQuat = FRotationMakeFromXZ(Forward, Up);
+		const FQuat CurrentQuat = FRotationMakeFromXZ(BoneDir, 
+			FVector::CrossProduct(FVector::CrossProduct(BoneDir, Right), BoneDir).GetSafeNormal());
+		const FQuat DeltaQuat = PoseQuat.Inverse() * CurrentQuat;
+
+		// Convert to axis-angle
+		FVector Axis;
+		float Angle;
+		DeltaQuat.ToAxisAndAngle(Axis, Angle);
+		Angle = FMath::RadiansToDegrees(Angle);
+
+		if (Angle < KINDA_SMALL_NUMBER)
+		{
+			return;
+		}
+
+		// Decompose into twist (along forward) and swing (perpendicular)
+		const float TwistComponent = FVector::DotProduct(Axis, Forward);
+		const float TwistAngle = FMath::Abs(Angle * TwistComponent);
+		const float SwingAngle = FMath::Abs(Angle * FMath::Sqrt(1.0f - TwistComponent * TwistComponent));
+
+		// Project swing into Y and Z components
+		const FVector SwingAxis = (Axis - Forward * TwistComponent).GetSafeNormal();
+		const float SwingYComponent = FVector::DotProduct(SwingAxis, Right);
+		const float SwingZComponent = FVector::DotProduct(SwingAxis, Up);
+		const float SwingYAngle = FMath::Abs(SwingAngle * SwingYComponent);
+		const float SwingZAngle = FMath::Abs(SwingAngle * SwingZComponent);
+
+		// Clamp each component
+		float OverTwist = TwistAngle - Bone.TwistLimitAngle;
+		float OverSwingY = SwingYAngle - Bone.SwingLimitYAngle;
+		float OverSwingZ = SwingZAngle - Bone.SwingLimitZAngle;
+
+		// If any component is over limit, rebuild the clamped rotation
+		if (OverTwist > 0.0f || OverSwingY > 0.0f || OverSwingZ > 0.0f)
+		{
+			// Rebuild clamped angle
+			float ClampedTwistAngle = FMath::Clamp(TwistAngle, 0.0f, Bone.TwistLimitAngle);
+			float ClampedSwingYAngle = FMath::Clamp(SwingYAngle, 0.0f, Bone.SwingLimitYAngle);
+			float ClampedSwingZAngle = FMath::Clamp(SwingZAngle, 0.0f, Bone.SwingLimitZAngle);
+
+			// Rebuild swing axis from clamped components
+			FVector ClampedSwingAxis = FVector::ZeroVector;
+			if (SwingAngle > KINDA_SMALL_NUMBER)
+			{
+				ClampedSwingAxis = (Right * SwingYComponent + Up * SwingZComponent).GetSafeNormal();
+			}
+
+			// Rebuild the total clamped angle
+			const float ClampedSwingTotal = FMath::Sqrt(
+				ClampedSwingYAngle * ClampedSwingYAngle + ClampedSwingZAngle * ClampedSwingZAngle);
+			const float ClampedTotalAngle = FMath::DegreesToRadians(
+				FMath::Sqrt(ClampedTwistAngle * ClampedTwistAngle + ClampedSwingTotal * ClampedSwingTotal));
+
+			if (ClampedTotalAngle > KINDA_SMALL_NUMBER)
+			{
+				FVector ClampedAxis;
+				if (ClampedSwingTotal > KINDA_SMALL_NUMBER)
+				{
+					ClampedAxis = (Forward * TwistComponent + ClampedSwingAxis).GetSafeNormal();
+				}
+				else
+				{
+					ClampedAxis = Forward;
+				}
+
+				const FQuat ClampedDelta = FQuat(ClampedAxis, ClampedTotalAngle);
+				const FQuat ClampedQuat = PoseQuat * ClampedDelta;
+				const FVector NewDir = ClampedQuat.GetForwardVector();
+				Bone.Location = NewDir * (Bone.Location - ParentBone.Location).Size() + ParentBone.Location;
+			}
+		}
 	}
-
-	FVector BoneDir = (Bone.Location - ParentBone.Location).GetSafeNormal();
-	const FVector PoseDir = (Bone.PoseLocation - ParentBone.PoseLocation).GetSafeNormal();
-	const FVector Axis = FVector::CrossProduct(PoseDir, BoneDir);
-	const float Angle = FMath::Atan2(Axis.Size(), FVector::DotProduct(PoseDir, BoneDir));
-	const float AngleOverLimit = FMath::RadiansToDegrees(Angle) - Bone.PhysicsSettings.LimitAngle;
-
-	if (AngleOverLimit > 0.0f)
+	else
 	{
-		BoneDir = BoneDir.RotateAngleAxis(-AngleOverLimit, Axis.GetSafeNormal());
-		Bone.Location = BoneDir * (Bone.Location - ParentBone.Location).Size() + ParentBone.Location;
+		// Legacy single-angle mode
+		if (Bone.PhysicsSettings.LimitAngle == 0.0f)
+		{
+			return;
+		}
+
+		FVector BoneDir = (Bone.Location - ParentBone.Location).GetSafeNormal();
+		const FVector PoseDir = (Bone.PoseLocation - ParentBone.PoseLocation).GetSafeNormal();
+		const FVector Axis = FVector::CrossProduct(PoseDir, BoneDir);
+		const float Angle = FMath::Atan2(Axis.Size(), FVector::DotProduct(PoseDir, BoneDir));
+		const float AngleOverLimit = FMath::RadiansToDegrees(Angle) - Bone.PhysicsSettings.LimitAngle;
+
+		if (AngleOverLimit > 0.0f)
+		{
+			BoneDir = BoneDir.RotateAngleAxis(-AngleOverLimit, Axis.GetSafeNormal());
+			Bone.Location = BoneDir * (Bone.Location - ParentBone.Location).Size() + ParentBone.Location;
+		}
 	}
 }
 

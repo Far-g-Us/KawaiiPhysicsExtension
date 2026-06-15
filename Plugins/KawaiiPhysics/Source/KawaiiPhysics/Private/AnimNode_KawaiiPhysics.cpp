@@ -108,6 +108,22 @@ FAnimNode_KawaiiPhysics::FAnimNode_KawaiiPhysics()
 {
 }
 
+void FAnimNode_KawaiiPhysics::RecordBoneCollisionEvent(FName BoneName, const FVector& CollisionPoint, const FVector& CollisionNormal)
+{
+	const int32 MaxEvents = 16;
+	FKawaiiPhysicsBoneCollisionEvent Event;
+	Event.BoneName = BoneName;
+	Event.CollisionPoint = CollisionPoint;
+	Event.CollisionNormal = CollisionNormal;
+	Event.TimeStamp = FPlatformTime::Seconds();
+
+	if (RecentCollisionEvents.Num() >= MaxEvents)
+	{
+		RecentCollisionEvents.RemoveAt(0);
+	}
+	RecentCollisionEvents.Add(Event);
+}
+
 void FAnimNode_KawaiiPhysics::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
 	FAnimNode_SkeletalControlBase::Initialize_AnyThread(Context);
@@ -225,6 +241,23 @@ void FAnimNode_KawaiiPhysics::AnimDrawDebug(FComponentSpacePoseContext& Output)
 				const float LineThickness = FMath::Max(
 					0.0f, CVarAnimNodeKawaiiPhysicsDebugDrawThickness.GetValueOnAnyThread());
 
+				// Draw bone chain connections (lines between parent-child)
+				for (const auto& ModifyBone : ModifyBones)
+				{
+					if (ModifyBone.HasParent() && ModifyBones.IsValidIndex(ModifyBone.ParentIndex))
+					{
+						const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[ModifyBone.ParentIndex];
+						const FVector ChildWS = ConvertSimulationSpaceLocation(Output, SimulationSpace,
+						                                                       EKawaiiPhysicsSimulationSpace::WorldSpace,
+						                                                       ModifyBone.Location);
+						const FVector ParentWS = ConvertSimulationSpaceLocation(Output, SimulationSpace,
+						                                                        EKawaiiPhysicsSimulationSpace::WorldSpace,
+						                                                        ParentBone.Location);
+						AnimInstanceProxy->AnimDrawDebugLine(ParentWS, ChildWS, FColor::White, false, -1.0f,
+						                                     LineThickness * 0.5f, SDPG_Foreground);
+					}
+				}
+
 				// Modify Bones
 				for (const auto& ModifyBone : ModifyBones)
 				{
@@ -237,6 +270,20 @@ void FAnimNode_KawaiiPhysics::AnimDrawDebug(FComponentSpacePoseContext& Output)
 					             : (ModifyBone.bInterBoneDummy ? FColor::Cyan : (ModifyBone.bDummy ? FColor::Red : FColor::Yellow));
 					AnimInstanceProxy->AnimDrawDebugSphere(LocationWS, ModifyBone.PhysicsSettings.Radius, 8,
 					                                       Color, false, -1, LineThickness, SDPG_Foreground);
+
+					// Draw velocity vector
+					if (!ModifyBone.bDummy && !ModifyBone.bBridgeDummy)
+					{
+						const FVector Velocity = ModifyBone.Location - ModifyBone.PrevLocation;
+						if (Velocity.SizeSquared() > 1.0f)
+						{
+							const FVector VelocityWS = ConvertSimulationSpaceLocation(Output, SimulationSpace,
+							                                                           EKawaiiPhysicsSimulationSpace::WorldSpace,
+							                                                           ModifyBone.Location + Velocity * 10.0f);
+							AnimInstanceProxy->AnimDrawDebugLine(LocationWS, VelocityWS, FColor::Cyan, false, -1.0f,
+							                                     LineThickness * 0.5f, SDPG_Foreground);
+						}
+					}
 
 					AnimInstanceProxy->AnimDrawDebugInWorldMessage(
 						FString::Printf(TEXT("%.2f"), ModifyBone.LengthRateFromRoot),
@@ -366,6 +413,23 @@ void FAnimNode_KawaiiPhysics::AnimDrawDebug(FComponentSpacePoseContext& Output)
 						                                        SDPG_Foreground);
 					}
 #endif
+				}
+
+				// Draw recent collision events (red crosshairs)
+				for (const auto& Event : RecentCollisionEvents)
+				{
+					const float Age = FPlatformTime::Seconds() - Event.TimeStamp;
+					if (Age < 2.0f) // Show for 2 seconds
+					{
+						const float Alpha = 1.0f - (Age / 2.0f);
+						const FColor EventColor = FColor(255, 0, 0, FMath::Clamp((int32)(Alpha * 255), 0, 255));
+						AnimInstanceProxy->AnimDrawDebugSphere(Event.CollisionPoint, 3.0f, 4, EventColor,
+						                                       false, -1, LineThickness * 2.0f, SDPG_Foreground);
+						AnimInstanceProxy->AnimDrawDebugLine(
+							Event.CollisionPoint,
+							Event.CollisionPoint + Event.CollisionNormal * 15.0f,
+							EventColor, false, -1.0f, LineThickness, SDPG_Foreground);
+					}
 				}
 			}
 		}
@@ -566,6 +630,54 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 #endif
 		{
 			bInitPhysicsSettings = true;
+		}
+	}
+
+	// LOD-aware physics settings
+	if (bEnableLODSettings)
+	{
+		const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
+		if (SkelComp)
+		{
+			const int32 CurrentLOD = SkelComp->GetPredictedLODLevel();
+			if (const FKawaiiPhysicsLODSettings* LODSetting = LODSettings.Find(CurrentLOD))
+			{
+				if (!LODSetting->bEnabled)
+				{
+					// Skip physics at this LOD
+					return;
+				}
+
+				// Apply LOD overrides to modify bones
+				for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+				{
+					if (LODSetting->DampingOverride > 0.0f)
+					{
+						Bone.PhysicsSettings.Damping = LODSetting->DampingOverride;
+					}
+					if (LODSetting->StiffnessOverride > 0.0f)
+					{
+						Bone.PhysicsSettings.Stiffness = LODSetting->StiffnessOverride;
+					}
+					if (LODSetting->LimitAngleOverride > 0.0f)
+					{
+						Bone.PhysicsSettings.LimitAngle = LODSetting->LimitAngleOverride;
+					}
+				}
+
+				// Apply LOD world collision override
+				if (!LODSetting->bAllowWorldCollision)
+				{
+					bAllowWorldCollision = false;
+				}
+
+				// Apply LOD bone constraint iterations override
+				if (LODSetting->BoneConstraintIterationsOverride > 0)
+				{
+					BoneConstraintIterationCountBeforeCollision = LODSetting->BoneConstraintIterationsOverride;
+					BoneConstraintIterationCountAfterCollision = LODSetting->BoneConstraintIterationsOverride;
+				}
+			}
 		}
 	}
 	UpdateSphericalLimits(SphericalLimits, Output, BoneContainer, ComponentTransform);

@@ -1,0 +1,71 @@
+// KawaiiPhysics GPU Simulation - Compute Shader (Proof of Concept)
+// Implements Verlet integration + stiffness on GPU for performance
+
+#include "/Engine/Public/Platform.ush"
+
+// Bone data structure
+struct FGPUKawaiiBone
+{
+    float4 Location;      // xyz = position, w = radius
+    float4 PrevLocation;  // xyz = prev position, w = unused
+    float4 PoseLocation;  // xyz = pose position, w = stiffness
+    float4 Settings;      // x = damping, y = worldDampingLoc, z = worldDampingRot, w = limitAngle
+    int4   Indices;       // x = parentIndex, y = childCount, z = isDummy, w = unused
+    float4 BoneLength;    // x = lengthFromRoot, y = lengthRateFromRoot, zw = unused
+};
+
+// Constants
+cbuffer KawaiiPhysicsConstants : register(b0)
+{
+    float4x4 ComponentTransform;
+    float4x4 PrevComponentTransform;
+    float4   SkelCompMoveVector;   // xyz = movement, w = deltaTime
+    float4   SkelCompMoveRotation; // quaternion as xyzw
+    float    DeltaTime;
+    float    PredictionScale;
+    int      NumBones;
+    int      Pad0;
+};
+
+// Buffers
+RWStructuredBuffer<FGPUKawaiiBone> BoneBuffer : register(u0);
+
+// Compute shader: Verlet integration + stiffness
+[numthreads(64, 1, 1)]
+void MainCS(uint3 DTid : SV_DispatchThreadID)
+{
+    if ((int)DTid.x >= NumBones)
+        return;
+
+    FGPUKawaiiBone Bone = BoneBuffer[DTid.x];
+
+    // Skip dummy bones
+    if (Bone.Indices.z != 0)
+    {
+        BoneBuffer[DTid.x] = Bone;
+        return;
+    }
+
+    float Damping = Bone.Settings.x;
+    float WorldDampingLoc = Bone.Settings.y;
+    float Stiffness = Bone.PoseLocation.w;
+    float WorldDampingRot = Bone.Settings.z;
+
+    // Verlet integration
+    float3 Velocity = (Bone.Location.xyz - Bone.PrevLocation.xyz) * (1.0 - Damping);
+    float3 NewLocation = Bone.Location.xyz + Velocity;
+
+    // Stiffness: pull towards pose
+    float3 PullDir = Bone.PoseLocation.xyz - NewLocation;
+    NewLocation += PullDir * Stiffness;
+
+    // World damping: follow component movement
+    float3 PredictedMove = SkelCompMoveVector.xyz * (1.0 + PredictionScale);
+    NewLocation += PredictedMove * (1.0 - WorldDampingLoc);
+
+    // Store results
+    Bone.PrevLocation.xyz = Bone.Location.xyz;
+    Bone.Location.xyz = NewLocation;
+
+    BoneBuffer[DTid.x] = Bone;
+}

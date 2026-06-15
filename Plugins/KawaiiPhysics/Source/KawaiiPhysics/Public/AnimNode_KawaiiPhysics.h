@@ -31,6 +31,7 @@
 class UKawaiiPhysics_CustomExternalForce;
 class UKawaiiPhysicsLimitsDataAsset;
 class UKawaiiPhysicsBoneConstraintsDataAsset;
+class UKawaiiPhysicsGPUCompute;
 
 #if ENABLE_ANIM_DEBUG
 extern KAWAIIPHYSICS_API TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsEnable;
@@ -193,13 +194,23 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings", meta = (PinHiddenByDefault))
 	EPlanarConstraint PlanarConstraint = EPlanarConstraint::None;
 
-	/**
+	/** 
 	* SkeletalMeshComponentの移動量を物理挙動に反映する際に適用されるスケール。
 	* Scale to apply when reflecting the movement of the SkeletalMeshComponent in physical behavior.
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings",
 		meta = (PinHiddenByDefault))
 	FVector SkelCompMoveScale = FVector::One();
+
+	/**
+	* 予測スケール。アクターの速度から1～2フレーム先の移動を予測し、WorldDampingの遅延を軽減する。
+	* 0.0 = 予測なし（従来互換）。1.0 = 1フレーム分の移動を予測。
+	* Prediction scale. Predicts 1-2 frames ahead from actor velocity to reduce WorldDamping latency.
+	* 0.0 = no prediction (legacy). 1.0 = predict 1 frame of movement.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings",
+		meta = (PinHiddenByDefault, ClampMin = "0.0", ClampMax = "5.0"))
+	float PredictionScale = 0.0f;
 
 	/** 
  	* 各ボーンの物理パラメータを毎フレーム更新するフラグ。
@@ -218,6 +229,31 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings", AdvancedDisplay,
 		meta = (PinHiddenByDefault))
 	bool ResetBoneTransformWhenBoneNotFound = false;
+
+	/**
+	* LODごとの物理設定。キーはLODレベル（0,1,2...）。設定が見つからないLODではグローバル設定が使用される。
+	* Per-LOD physics settings. Key is LOD level (0,1,2...). Global settings are used when no LOD entry is found.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|LOD",
+		meta = (PinHiddenByDefault))
+	TMap<int32, FKawaiiPhysicsLODSettings> LODSettings;
+
+	/**
+	* LOD-aware設定を有効にするフラグ
+	* Enable LOD-aware physics settings
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|LOD",
+		meta = (PinHiddenByDefault))
+	bool bEnableLODSettings = false;
+
+	/**
+	* GPUシミュレーションを有効にするフラグ（実験的）。Verlet積分とStiffnessをGPUで実行。
+	* Enable GPU simulation (experimental). Runs Verlet integration and stiffness on GPU.
+	* Collision and bone constraints remain on CPU (hybrid approach).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|GPU",
+		meta = (PinHiddenByDefault))
+	bool bEnableGPUSimulation = false;
 
 	/** 
 	* 各ボーンに適用するPhysics Settings/ Damping パラメータを補正。
@@ -282,6 +318,30 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings", AdvancedDisplay,
 		meta = (PinHiddenByDefault, DisplayName = "LimitAngle Rate by Bone Length Rate"))
 	FRuntimeFloatCurve LimitAngleCurveData;
+
+	/** 
+	* Twist/Swing制限が有効な場合のTwistLimitAngleの補正カーブ
+	* Curve to correct TwistLimitAngle when Twist/Swing limits are enabled
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Twist Swing",
+		meta = (PinHiddenByDefault, DisplayName = "TwistLimitAngle Rate by Bone Length Rate"))
+	FRuntimeFloatCurve TwistLimitAngleCurveData;
+
+	/** 
+	* SwingLimitYAngleの補正カーブ
+	* Curve to correct SwingLimitYAngle when Twist/Swing limits are enabled
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Twist Swing",
+		meta = (PinHiddenByDefault, DisplayName = "SwingLimitY Angle Rate by Bone Length Rate"))
+	FRuntimeFloatCurve SwingLimitYAngleCurveData;
+
+	/** 
+	* SwingLimitZAngleの補正カーブ
+	* Curve to correct SwingLimitZAngle when Twist/Swing limits are enabled
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Twist Swing",
+		meta = (PinHiddenByDefault, DisplayName = "SwingLimitZ Angle Rate by Bone Length Rate"))
+	FRuntimeFloatCurve SwingLimitZAngleCurveData;
 
 	/** 
 	* コリジョン（球）
@@ -421,6 +481,18 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Bone Constraint",
 		meta = (PinHiddenByDefault))
 	TObjectPtr<UKawaiiPhysicsBoneConstraintsDataAsset> BoneConstraintsDataAsset;
+
+	/**
+	* スカートなどのグリッド状のBone Constraintを自動生成する。隣接するチェーン間の水平制約を追加。
+	* Automatically generate grid-style bone constraints for skirts. Adds horizontal constraints between adjacent chains.
+	* @param SkelComp - Skeletal mesh component to query bone hierarchy
+	* @param RootBoneName - Name of the root bone to start analysis from
+	* @param ChainPrefixes - Prefixes for each chain (e.g., {"skirt_L", "skirt_R"})
+	* @return Number of constraints generated
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Bone Constraint", meta = (BlueprintThreadSafe))
+	int32 AutoGenerateGridConstraints(USkeletalMeshComponent* SkelComp, FName RootBoneName,
+	                                  TArray<FName> ChainPrefixes);
 
 	/** 
 	* BoneConstraint処理の対象となるボーンのペアのプレビュー
@@ -574,6 +646,13 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag")
 	FGameplayTag KawaiiPhysicsTag;
+
+	/**
+	* 最近のコリジョンイベントのバッファ（Blueprintから取得可能）。最大16件保持、古いものから上書き。
+	* Recent collision event buffer (accessible from Blueprint). Keeps up to 16 events, overwrites oldest.
+	*/
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|Events")
+	TArray<FKawaiiPhysicsBoneCollisionEvent> RecentCollisionEvents;
 
 	/**
 	* 物理制御対象ボーンのランタイムキャッシュ。Initialize_AnyThread で毎回再構築されるため非シリアライズ(Transient)。
@@ -782,6 +861,11 @@ public:
 	{
 		return FMath::Max(1, TargetFramerate);
 	}
+
+	/**
+	 * Record a bone collision event into the circular buffer (max 16).
+	 */
+	void RecordBoneCollisionEvent(FName BoneName, const FVector& CollisionPoint, const FVector& CollisionNormal);
 
 	/**
 	 * シミュレーションで使用すべき dt を返す。サブステップ実行中は固定 dt（FixedDt）、

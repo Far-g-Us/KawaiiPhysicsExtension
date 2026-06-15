@@ -127,6 +127,34 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsSettings
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0"), category = "KawaiiPhysics")
 	float LimitAngle = 0.0f;
+
+	/**
+	* Twist/Swing制限を有効にするフラグ。有効にするとLimitAngleは無視され、TwistLimitAngle/SwingLimitYAngle/SwingLimitZAngleが使用される
+	* Enable Twist/Swing limits. When enabled, LimitAngle is ignored and TwistLimitAngle/SwingLimitYAngle/SwingLimitZAngle are used instead.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "KawaiiPhysics")
+	bool bUseTwistSwingLimits = false;
+
+	/**
+	* Twist回転（BoneForwardAxis周り）の制限角度
+	* Twist rotation limit angle (around the bone forward axis)
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", EditCondition = "bUseTwistSwingLimits"), category = "KawaiiPhysics")
+	float TwistLimitAngle = 0.0f;
+
+	/**
+	* Swing回転Y軸方向の制限角度
+	* Swing rotation limit angle (Y-axis component)
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", EditCondition = "bUseTwistSwingLimits"), category = "KawaiiPhysics")
+	float SwingLimitYAngle = 0.0f;
+
+	/**
+	* Swing回転Z軸方向の制限角度
+	* Swing rotation limit angle (Z-axis component)
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", EditCondition = "bUseTwistSwingLimits"), category = "KawaiiPhysics")
+	float SwingLimitZAngle = 0.0f;
 };
 
 /**
@@ -209,6 +237,14 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsModifyBone
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")
 	bool bDummy = false;
 
+	// ===== Twist/Swing Limits (runtime) =====
+	/** Twist limit angle (runtime, from curve evaluation) */
+	float TwistLimitAngle = 0.0f;
+	/** Swing limit Y angle (runtime, from curve evaluation) */
+	float SwingLimitYAngle = 0.0f;
+	/** Swing limit Z angle (runtime, from curve evaluation) */
+	float SwingLimitZAngle = 0.0f;
+
 	/**
 	* ボーン間ダミーボーンフラグ（2つの実ボーン間に挿入されたダミー）
 	* Flag: this is an inter-bone dummy (inserted between two real bones)
@@ -258,4 +294,87 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsModifyBone
 	FKawaiiPhysicsModifyBone()
 	{
 	}
+};
+
+/**
+ * Structure representing a bone collision event.
+ */
+USTRUCT(BlueprintType)
+struct KAWAIIPHYSICS_API FKawaiiPhysicsBoneCollisionEvent
+{
+	GENERATED_BODY()
+
+	/** Name of the bone that collided */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|CollisionEvent")
+	FName BoneName = NAME_None;
+
+	/** World-space point of collision */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|CollisionEvent")
+	FVector CollisionPoint = FVector::ZeroVector;
+
+	/** World-space normal of collision */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|CollisionEvent")
+	FVector CollisionNormal = FVector::ZeroVector;
+
+	/** Time when the collision occurred */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|CollisionEvent")
+	float TimeStamp = 0.0f;
+};
+
+/**
+ * Saved physics state for serialization/deserialization.
+ */
+USTRUCT(BlueprintType)
+struct KAWAIIPHYSICS_API FKawaiiPhysicsSavedState
+{
+	GENERATED_BODY()
+
+	/** Bone names and their saved locations/prev locations */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|SavedState")
+	TMap<FName, FVector> BoneLocations;
+
+	/** Previous locations for Verlet integration continuity */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|SavedState")
+	TMap<FName, FVector> BonePrevLocations;
+
+	/** Whether this state is valid */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|SavedState")
+	bool bIsValid = false;
+};
+
+/**
+ * LOD-specific settings for KawaiiPhysics.
+ */
+USTRUCT(BlueprintType)
+struct KAWAIIPHYSICS_API FKawaiiPhysicsLODSettings
+{
+	GENERATED_BODY()
+
+	/** Whether to enable physics simulation at this LOD */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD")
+	bool bEnabled = true;
+
+	/** Damping override (0 = use global setting) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float DampingOverride = 0.0f;
+
+	/** Stiffness override (0 = use global setting) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float StiffnessOverride = 0.0f;
+
+	/** LimitAngle override (0 = use global setting) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD", meta = (ClampMin = "0.0"))
+	float LimitAngleOverride = 0.0f;
+
+	/** Whether to enable world collision at this LOD */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD")
+	bool bAllowWorldCollision = false;
+
+	/** Whether to enable bone constraints at this LOD */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD")
+	bool bAllowBoneConstraints = true;
+
+	/** Bone constraint iteration count override (0 = use global setting) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD", meta = (ClampMin = "0", ClampMax = "10"))
+	int32 BoneConstraintIterationsOverride = 0;
 };

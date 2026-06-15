@@ -70,6 +70,26 @@ void FAnimNode_KawaiiPhysics::UpdatePhysicsSettingsOfModifyBones()
 		Bone.PhysicsSettings.LimitAngle = FMath::Max(
 			PhysicsSettings.LimitAngle * LimitAngleCurveData.GetRichCurveConst()->Eval(
 				LengthRate, 1.0f), 0.0f);
+
+		// Twist/Swing Limits
+		if (PhysicsSettings.bUseTwistSwingLimits)
+		{
+			Bone.TwistLimitAngle = FMath::Max(
+				PhysicsSettings.TwistLimitAngle * TwistLimitAngleCurveData.GetRichCurveConst()->Eval(
+					LengthRate, 1.0f), 0.0f);
+			Bone.SwingLimitYAngle = FMath::Max(
+				PhysicsSettings.SwingLimitYAngle * SwingLimitYAngleCurveData.GetRichCurveConst()->Eval(
+					LengthRate, 1.0f), 0.0f);
+			Bone.SwingLimitZAngle = FMath::Max(
+				PhysicsSettings.SwingLimitZAngle * SwingLimitZAngleCurveData.GetRichCurveConst()->Eval(
+					LengthRate, 1.0f), 0.0f);
+		}
+		else
+		{
+			Bone.TwistLimitAngle = 0.0f;
+			Bone.SwingLimitYAngle = 0.0f;
+			Bone.SwingLimitZAngle = 0.0f;
+		}
 	}
 }
 
@@ -767,8 +787,11 @@ void FAnimNode_KawaiiPhysics::ApplyWorldMoveFollowNonBaseBone(FKawaiiPhysicsModi
 	if (SimulationSpace != EKawaiiPhysicsSimulationSpace::WorldSpace
 		&& TeleportType != ETeleportType::TeleportPhysics)
 	{
+		// Predictive physics: apply predicted movement to reduce latency
+		const FVector PredictedMove = SkelCompMoveVector + SkelCompMoveVector * PredictionScale;
+
 		// Follow Translation
-		Bone.Location += SkelCompMoveVector * (1.0f - Bone.PhysicsSettings.WorldDampingLocation);
+		Bone.Location += PredictedMove * (1.0f - Bone.PhysicsSettings.WorldDampingLocation);
 
 		// Follow Rotation
 		Bone.Location += (SkelCompMoveRotation.RotateVector(Bone.PrevLocation) - Bone.PrevLocation)
@@ -1134,4 +1157,95 @@ FAnimNode_KawaiiPhysics::FSimulationSpaceCache FAnimNode_KawaiiPhysics::BuildSim
 	}
 
 	return Cache;
+}
+
+int32 FAnimNode_KawaiiPhysics::AutoGenerateGridConstraints(USkeletalMeshComponent* SkelComp,
+                                                           FName RootBoneName,
+                                                           TArray<FName> ChainPrefixes)
+{
+	if (!SkelComp || ChainPrefixes.Num() < 2)
+	{
+		return 0;
+	}
+
+	const USkeleton* Skeleton = SkelComp->GetSkeletalMeshAsset() ? SkelComp->GetSkeletalMeshAsset()->GetSkeleton() : nullptr;
+	if (!Skeleton)
+	{
+		return 0;
+	}
+
+	const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+	const int32 NumBones = RefSkeleton.GetNum();
+
+	// Find bones for each chain prefix
+	TArray<TArray<int32>> ChainBones;
+	ChainBones.SetNum(ChainPrefixes.Num());
+
+	for (int32 PrefixIdx = 0; PrefixIdx < ChainPrefixes.Num(); ++PrefixIdx)
+	{
+		const FName& Prefix = ChainPrefixes[PrefixIdx];
+		for (int32 BoneIdx = 0; BoneIdx < NumBones; ++BoneIdx)
+		{
+			const FName BoneName = RefSkeleton.GetBoneName(BoneIdx);
+			if (BoneName.ToString().StartsWith(Prefix.ToString(), ESearchCase::IgnoreCase))
+			{
+				ChainBones[PrefixIdx].Add(BoneIdx);
+			}
+		}
+
+		// Sort chains by depth (closer to root first)
+		ChainBones[PrefixIdx].Sort([&RefSkeleton](const int32& A, const int32& B)
+		{
+			return RefSkeleton.GetDepth(A) < RefSkeleton.GetDepth(B);
+		});
+	}
+
+	// Generate horizontal constraints between adjacent chains at the same depth level
+	int32 ConstraintsGenerated = 0;
+	const int32 MaxDepth = FMath::Min(
+		ChainBones.Num() > 0 ? ChainBones[0].Num() : 0,
+		ChainBones.Num() > 1 ? ChainBones[1].Num() : 0);
+
+	for (int32 Depth = 0; Depth < MaxDepth; ++Depth)
+	{
+		for (int32 ChainIdx = 0; ChainIdx < ChainBones.Num() - 1; ++ChainIdx)
+		{
+			if (ChainBones[ChainIdx].IsValidIndex(Depth) && ChainBones[ChainIdx + 1].IsValidIndex(Depth))
+			{
+				const int32 BoneIdx1 = ChainBones[ChainIdx][Depth];
+				const int32 BoneIdx2 = ChainBones[ChainIdx + 1][Depth];
+
+				FModifyBoneConstraint Constraint;
+				Constraint.Bone1.BoneName = RefSkeleton.GetBoneName(BoneIdx1);
+				Constraint.Bone2.BoneName = RefSkeleton.GetBoneName(BoneIdx2);
+				Constraint.Bone1.Initialize(RefSkeleton);
+				Constraint.Bone2.Initialize(RefSkeleton);
+
+				// Check if constraint already exists
+				bool bExists = false;
+				for (const FModifyBoneConstraint& Existing : BoneConstraints)
+				{
+					if (Existing == Constraint)
+					{
+						bExists = true;
+						break;
+					}
+				}
+
+				if (!bExists)
+				{
+					BoneConstraints.Add(Constraint);
+					ConstraintsGenerated++;
+				}
+			}
+		}
+	}
+
+	// Request reinit to apply new constraints
+	if (ConstraintsGenerated > 0)
+	{
+		RequestModifyBonesReinit();
+	}
+
+	return ConstraintsGenerated;
 }
