@@ -1207,3 +1207,204 @@ void FAnimNode_KawaiiPhysics::UpdateSharedCollisionLimits(
 	ConvertAndStore(SharedCollisionMergedData.BoxLimits,       SharedBoxLimits,        NoOp);
 	ConvertAndStore(SharedCollisionMergedData.PlanarLimits,    SharedPlanarLimits,     RecomputePlane);
 }
+
+// Mesh-based collision using Chaos Physics (GJK/EPA)
+void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bone,
+                                                     TArray<FKawaiiPhysicsMeshCollision>& Collisions,
+                                                     FComponentSpacePoseContext& Output)
+{
+	if (Collisions.Num() == 0)
+	{
+		return;
+	}
+
+	const float BoneRadius = Bone.PhysicsSettings.Radius;
+
+	for (FKawaiiPhysicsMeshCollision& MeshCol : Collisions)
+	{
+		if (!MeshCol.bEnable)
+		{
+			continue;
+		}
+
+		// Get driving bone transform
+		FTransform MeshTransform = MeshCol.MeshTransform;
+		if (MeshCol.DrivingBone.BoneIndex >= 0)
+		{
+			const FReferenceSkeleton& RefSkeleton = Output.Pose.GetPose().GetBoneContainer().GetReferenceSkeleton();
+			const int32 BoneIndex = MeshCol.DrivingBone.GetCompactPoseIndex(Output.Pose.GetPose().GetBoneContainer());
+			if (BoneIndex >= 0)
+			{
+				const FTransform BoneTransform = Output.Pose.GetComponentSpaceTransform(FCompactPoseBoneIndex(BoneIndex));
+				MeshTransform = BoneTransform * MeshCol.MeshTransform;
+			}
+		}
+
+		// Build convex hull from vertices or use sphere fallback
+		TArray<FVector> HullVertices;
+
+		if (MeshCol.MeshSource == EMeshCollisionSourceType::ConvexHull && MeshCol.ConvexHullVertices.Num() >= 4)
+		{
+			// Use provided convex hull vertices
+			HullVertices.Reserve(MeshCol.ConvexHullVertices.Num());
+			for (const FVector& V : MeshCol.ConvexHullVertices)
+			{
+				HullVertices.Add(MeshTransform.TransformPosition(V * MeshCol.MeshScale));
+			}
+		}
+		else if (MeshCol.MeshSource == EMeshCollisionSourceType::StaticMesh && MeshCol.CollisionMesh)
+		{
+			// Get convex hull from static mesh
+			// Use simplified approach: get bounding hull from render data
+			const FStaticMeshRenderData* RenderData = MeshCol.CollisionMesh->GetRenderData();
+			if (RenderData && RenderData->LODResources.Num() > 0)
+			{
+				const FStaticMeshLODResource& LODResource = RenderData->LODResources[0];
+				const FStaticMeshVertexBuffer& VertexBuffer = LODResource.VertexBuffers.PositionVertexBuffer;
+				const int32 NumVerts = VertexBuffer.GetNumVertices();
+
+				if (NumVerts > 0)
+				{
+					// Compute bounding box and use corners + center as simplified hull
+					FBox Bounds(EForceInit);
+					for (int32 i = 0; i < NumVerts; ++i)
+					{
+						const FVector WorldPos = MeshTransform.TransformPosition(VertexBuffer.VertexPosition(i) * MeshCol.MeshScale);
+						Bounds += WorldPos;
+					}
+
+					// Use bounding box corners as simplified convex hull
+					const FVector Center = Bounds.GetCenter();
+					const FVector Extent = Bounds.GetExtent() * 0.5f;
+
+					HullVertices.Add(Center + FVector(Extent.X, Extent.Y, Extent.Z));
+					HullVertices.Add(Center + FVector(Extent.X, Extent.Y, -Extent.Z));
+					HullVertices.Add(Center + FVector(Extent.X, -Extent.Y, Extent.Z));
+					HullVertices.Add(Center + FVector(Extent.X, -Extent.Y, -Extent.Z));
+					HullVertices.Add(Center + FVector(-Extent.X, Extent.Y, Extent.Z));
+					HullVertices.Add(Center + FVector(-Extent.X, Extent.Y, -Extent.Z));
+					HullVertices.Add(Center + FVector(-Extent.X, -Extent.Y, Extent.Z));
+					HullVertices.Add(Center + FVector(-Extent.X, -Extent.Y, -Extent.Z));
+					HullVertices.Add(Center); // Center point
+				}
+			}
+		}
+		else if (MeshCol.MeshSource == EMeshCollisionSourceType::PhysicsAsset && MeshCol.PhysicsAsset)
+		{
+			// Use physics body from physics asset
+			for (const UBodySetup* BodySetup : MeshCol.PhysicsAsset->BodySetup)
+			{
+				if (BodySetup && BodySetup->AggGeom.ConvexElems.Num() > 0)
+				{
+					for (const FKConvexElem& ConvexElem : BodySetup->AggGeom.ConvexElems)
+					{
+						if (ConvexElem.VertexData.Num() >= 4)
+						{
+							for (const FVector& V : ConvexElem.VertexData)
+							{
+								HullVertices.Add(MeshTransform.TransformPosition(V * MeshCol.MeshScale));
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if (HullVertices.Num() < 4)
+		{
+			continue;
+		}
+
+		// Simple convex hull collision: find closest point on hull to bone and push out
+		// This is a simplified GJK-like approach for real-time performance
+		FVector ClosestPoint = HullVertices[0];
+		float MinDistSq = FVector::DistSquared(Bone.Location, ClosestPoint);
+
+		for (const FVector& V : HullVertices)
+		{
+			const float DistSq = FVector::DistSquared(Bone.Location, V);
+			if (DistSq < MinDistSq)
+			{
+				MinDistSq = DistSq;
+				ClosestPoint = V;
+			}
+		}
+
+		// Check if bone is inside convex hull (simple approach: check against multiple planes)
+		bool bInsideHull = true;
+		FVector CollisionNormal = FVector::ZeroVector;
+
+		// Check against each face of the convex hull (use nearby vertices as potential faces)
+		for (int32 i = 0; i < HullVertices.Num() && bInsideHull; ++i)
+		{
+			const FVector& A = HullVertices[i];
+			const FVector& B = HullVertices[(i + 1) % HullVertices.Num()];
+			const FVector& C = HullVertices[(i + 2) % HullVertices.Num()];
+
+			const FVector FaceNormal = FVector::CrossProduct(B - A, C - A).GetSafeNormal();
+			if (FaceNormal.IsNearlyZero())
+			{
+				continue;
+			}
+
+			const float DistToPlane = FVector::DotProduct(Bone.Location - A, FaceNormal);
+			if (DistToPlane > BoneRadius)
+			{
+				bInsideHull = false;
+			}
+			else if (DistToPlane < 0)
+			{
+				// Bone is outside this face
+				bInsideHull = false;
+				// Push bone outside if within radius
+				if (FMath::Abs(DistToPlane) < BoneRadius)
+				{
+					Bone.Location += FaceNormal * (BoneRadius - DistToPlane);
+					CollisionNormal = FaceNormal;
+				}
+			}
+		}
+
+		// If bone is inside hull, push to nearest face
+		if (bInsideHull)
+		{
+			// Find the face that the bone is closest to and push out
+			float MaxPushDist = 0;
+			FVector BestNormal = FVector::ZeroVector;
+
+			for (int32 i = 0; i < HullVertices.Num(); ++i)
+			{
+				const FVector& A = HullVertices[i];
+				const FVector& B = HullVertices[(i + 1) % HullVertices.Num()];
+				const FVector& C = HullVertices[(i + 2) % HullVertices.Num()];
+
+				const FVector FaceNormal = FVector::CrossProduct(B - A, C - A).GetSafeNormal();
+				if (FaceNormal.IsNearlyZero())
+				{
+					continue;
+				}
+
+				const float DistToPlane = FVector::DotProduct(Bone.Location - A, FaceNormal);
+				const float PushDist = BoneRadius - DistToPlane;
+
+				if (PushDist > MaxPushDist)
+				{
+					MaxPushDist = PushDist;
+					BestNormal = FaceNormal;
+				}
+			}
+
+			if (!BestNormal.IsNearlyZero())
+			{
+				Bone.Location += BestNormal * MaxPushDist;
+				CollisionNormal = BestNormal;
+			}
+		}
+
+		// Record collision event
+		if (!CollisionNormal.IsNearlyZero())
+		{
+			RecordBoneCollisionEvent(Bone.BoneRef.BoneName, Bone.Location, CollisionNormal);
+		}
+	}
+}

@@ -32,6 +32,7 @@ class UKawaiiPhysics_CustomExternalForce;
 class UKawaiiPhysicsLimitsDataAsset;
 class UKawaiiPhysicsBoneConstraintsDataAsset;
 class UKawaiiPhysicsGPUCompute;
+class UKawaiiPhysicsPresetAsset;
 
 #if ENABLE_ANIM_DEBUG
 extern KAWAIIPHYSICS_API TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsEnable;
@@ -255,6 +256,194 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 		meta = (PinHiddenByDefault))
 	bool bEnableGPUSimulation = false;
 
+	// --- Morph Target Driver ---
+
+	/**
+	* Enable morph target driving based on bone velocity.
+	* Morph targets are set based on bone speed/direction for dynamic shape changes.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Morph Targets",
+		meta = (PinHiddenByDefault))
+	bool bEnableMorphTargetDriving = false;
+
+	/**
+	* Mapping of morph target names to bone names that drive them.
+	* Key = morph target name, Value = bone name to sample velocity from.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Morph Targets",
+		meta = (EditCondition = "bEnableMorphTargetDriving", PinHiddenByDefault))
+	TMap<FName, FName> MorphTargetBoneMapping;
+
+	/**
+	* Global multiplier for morph target values (0-1).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Morph Targets",
+		meta = (ClampMin = "0", ClampMax = "1", EditCondition = "bEnableMorphTargetDriving", PinHiddenByDefault))
+	float MorphTargetMultiplier = 0.5f;
+
+	/**
+	* Speed threshold before morph targets start activating (cm/s).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Morph Targets",
+		meta = (ClampMin = "0", EditCondition = "bEnableMorphTargetDriving", PinHiddenByDefault))
+	float MorphTargetSpeedThreshold = 10.0f;
+
+	// --- Pose-Based Physics Blending ---
+
+	/**
+	* Enable pose-based physics blending.
+	* Adjusts physics settings based on character pose (standing/sitting/lying).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Pose Blending",
+		meta = (PinHiddenByDefault))
+	bool bEnablePoseBlending = false;
+
+	/**
+	* Gravity influence multiplier when standing (default = 1.0).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Pose Blending",
+		meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bEnablePoseBlending", PinHiddenByDefault))
+	float PoseGravityStanding = 1.0f;
+
+	/**
+	* Gravity influence multiplier when sitting (reduced gravity effect).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Pose Blending",
+		meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bEnablePoseBlending", PinHiddenByDefault))
+	float PoseGravitySitting = 0.7f;
+
+	/**
+	* Gravity influence multiplier when lying (horizontal, gravity pulls sideways).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Pose Blending",
+		meta = (ClampMin = "0", ClampMax = "2", EditCondition = "bEnablePoseBlending", PinHiddenByDefault))
+	float PoseGravityLying = 0.3f;
+
+	/**
+	* Damping multiplier when sitting (more stable).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Pose Blending",
+		meta = (ClampMin = "0.5", ClampMax = "2", EditCondition = "bEnablePoseBlending", PinHiddenByDefault))
+	float PoseDampingSitting = 1.2f;
+
+	/**
+	* Stiffness multiplier when lying (more rigid).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Pose Blending",
+		meta = (ClampMin = "0.5", ClampMax = "2", EditCondition = "bEnablePoseBlending", PinHiddenByDefault))
+	float PoseStiffnessLying = 1.5f;
+
+	// --- Self-Collision ---
+
+	/**
+	* Enable self-collision between bones in the same chain.
+	* Prevents breast/buttock bones from overlapping.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Self Collision",
+		meta = (PinHiddenByDefault))
+	bool bEnableSelfCollision = false;
+
+	/**
+	* Minimum distance between bones (prevents overlap).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Self Collision",
+		meta = (ClampMin = "0.1", ClampMax = "10", EditCondition = "bEnableSelfCollision", PinHiddenByDefault))
+	float SelfCollisionMinDistance = 1.0f;
+
+	/**
+	* Self collision radius multiplier.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Self Collision",
+		meta = (ClampMin = "0.5", ClampMax = "2", EditCondition = "bEnableSelfCollision", PinHiddenByDefault))
+	float SelfCollisionRadiusMultiplier = 1.0f;
+
+	// --- Spring-Based Volume Preservation ---
+
+	/**
+	* Enable spring-based volume preservation (more physical than linear interpolation).
+	* Uses spring physics with restoring force for realistic volume maintenance.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Spring Volume",
+		meta = (PinHiddenByDefault))
+	bool bEnableSpringVolume = false;
+
+	/**
+	* Spring stiffness for volume preservation (higher = more rigid).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Spring Volume",
+		meta = (ClampMin = "0", ClampMax = "100", EditCondition = "bEnableSpringVolume", PinHiddenByDefault))
+	float SpringVolumeStiffness = 20.0f;
+
+	/**
+	* Spring damping for volume preservation (higher = less oscillation).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Spring Volume",
+		meta = (ClampMin = "0", ClampMax = "10", EditCondition = "bEnableSpringVolume", PinHiddenByDefault))
+	float SpringVolumeDamping = 2.0f;
+
+	/**
+	* Spring rest length ratio (1.0 = original volume).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Spring Volume",
+		meta = (ClampMin = "0.5", ClampMax = "1.5", EditCondition = "bEnableSpringVolume", PinHiddenByDefault))
+	float SpringVolumeRestLength = 1.0f;
+
+	// --- Animation State-Driven Physics ---
+
+	/**
+	* Enable animation state-driven physics switching.
+	* Different physics presets for different animation states (Idle/Run/Jump).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|State Driven",
+		meta = (PinHiddenByDefault))
+	bool bEnableStateDrivenPhysics = false;
+
+	/**
+	* Current animation state name (set from Blueprint).
+	*/
+	UPROPERTY(BlueprintReadWrite, Category = "Physics Settings|State Driven")
+	FName CurrentAnimationState = FName("Idle");
+
+	/**
+	* Physics settings per animation state.
+	* Key = state name, Value = physics settings override.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|State Driven",
+		meta = (EditCondition = "bEnableStateDrivenPhysics", PinHiddenByDefault))
+	TMap<FName, FKawaiiPhysicsSettings> StatePhysicsSettings;
+
+	/**
+	* 距離ベースLODを有効にする。カメラとの距離に応じて自動的にシミュレーション品質を下げる。
+	* Enable distance-based LOD. Automatically reduces simulation quality based on camera distance.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
+		meta = (PinHiddenByDefault))
+	bool bEnableDistanceLOD = false;
+
+	/**
+	* 距離ベースLODの減衰開始距離
+	* Distance at which LOD reduction begins
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
+		meta = (PinHiddenByDefault, ClampMin = "100", EditCondition = "bEnableDistanceLOD"))
+	float DistanceLODStart = 1000.0f;
+
+	/**
+	* 距離ベースLODの最大減衰距离（この距離以上は最大品質低下）
+	* Distance at which maximum LOD reduction is applied
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
+		meta = (PinHiddenByDefault, ClampMin = "200", EditCondition = "bEnableDistanceLOD"))
+	float DistanceLODEnd = 5000.0f;
+
+	/**
+	* 最大減衰時にSimulationSpaceをComponentSpaceに強制するフラグ
+	* Force ComponentSpace at maximum LOD reduction (cheaper than WorldSpace)
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
+		meta = (PinHiddenByDefault, EditCondition = "bEnableDistanceLOD"))
+	bool bForceComponentSpaceAtFarLOD = true;
+
 	/** 
 	* 各ボーンに適用するPhysics Settings/ Damping パラメータを補正。
 	* 「RootBoneから特定のボーンまでの長さ / RootBoneから末端のボーンまでの長さ」(0.0~1.0)の値におけるカーブの値を各パラメータに乗算
@@ -367,6 +556,12 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	*/
 	UPROPERTY(EditAnywhere, Category = "Limits")
 	TArray<FPlanarLimit> PlanarLimits;
+
+	/** 
+	* Mesh-based collision for accurate body/clothing collision (GJK/EPA via Chaos Physics)
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Limits|Mesh Collision")
+	TArray<FKawaiiPhysicsMeshCollision> MeshCollisions;
 
 	/** 
 	* コリジョン設定（DataAsset版）。別AnimNode・ABPで設定を流用したい場合はこちらを推奨
@@ -653,6 +848,26 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	*/
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|Events")
 	TArray<FKawaiiPhysicsBoneCollisionEvent> RecentCollisionEvents;
+
+	/**
+	* Volume preservation: stores original chain lengths at init time for volume restoration.
+	* Key = ModifyBones index of chain root, Value = original total chain length.
+	*/
+	UPROPERTY()
+	TMap<int32, float> OriginalChainLengths;
+
+	/**
+	* Spring volume: stores spring velocities for volume preservation.
+	* Key = ModifyBones index of chain root, Value = spring velocity.
+	*/
+	UPROPERTY()
+	TMap<int32, float> SpringVolumeVelocities;
+
+	/**
+	* Detected pose for pose-based blending (Standing/Sitting/Lying).
+	*/
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|Pose")
+	EKawaiiPhysicsDetectedPose DetectedPose = EKawaiiPhysicsDetectedPose::Standing;
 
 	/**
 	* 物理制御対象ボーンのランタイムキャッシュ。Initialize_AnyThread で毎回再構築されるため非シリアライズ(Transient)。
@@ -1148,6 +1363,53 @@ protected:
 	 * @param SkelComp The skeletal mesh component.
 	 * @param Output The pose context.
 	 */
+	void ApplyVolumePreservation();
+
+	/**
+	 * Apply bone scaling based on compression/stretch (UBE-style visual effect).
+	 */
+	void ApplyBoneScaling();
+
+	/**
+	 * Drive morph targets based on bone velocity.
+	 *
+	 * @param Output The pose context for accessing skeletal mesh component.
+	 */
+	void ApplyMorphTargetDriving(FComponentSpacePoseContext& Output);
+
+	/**
+	 * Detect character pose (Standing/Sitting/Lying) based on pelvis/spine orientation.
+	 */
+	void DetectPose();
+
+	/**
+	 * Apply pose-based physics blending (adjust gravity/damping/stiffness).
+	 */
+	void ApplyPoseBlending();
+
+	/**
+	 * Apply self-collision between bones.
+	 */
+	void ApplySelfCollision();
+
+	/**
+	 * Apply spring-based volume preservation.
+	 */
+	void ApplySpringVolume();
+
+	/**
+	 * Apply animation state-driven physics switching.
+	 */
+	void ApplyStateDrivenPhysics();
+
+	/**
+	 * Auto-generate collision primitives from skeletal mesh bounds.
+	 *
+	 * @param SkelComp The skeletal mesh component.
+	 * @param ChainRoots Array of bone chain root names to generate collisions for.
+	 */
+	void AutoGenerateCollisions(const USkeletalMeshComponent* SkelComp, const TArray<FName>& ChainRoots);
+
 	void Simulate(FKawaiiPhysicsModifyBone& Bone, const FSceneInterface* Scene, const FTransform& ComponentTransform,
 	              const float& Exponent, const USkeletalMeshComponent* SkelComp,
 	              FComponentSpacePoseContext& Output);
@@ -1219,6 +1481,16 @@ protected:
 	 * @param Limits An array of planar limits.
 	 */
 	void AdjustByPlanerCollision(FKawaiiPhysicsModifyBone& Bone, TArray<FPlanarLimit>& Limits);
+
+	/**
+	 * Adjusts the bone position based on mesh collision limits (GJK/EPA via Chaos Physics).
+	 *
+	 * @param Bone The bone to adjust.
+	 * @param Collisions An array of mesh collision limits.
+	 * @param Output The pose context for getting component transforms.
+	 */
+	void AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bone, TArray<FKawaiiPhysicsMeshCollision>& Collisions,
+	                           FComponentSpacePoseContext& Output);
 
 	/**
 	 * Adjusts the bone position based on angle limits.

@@ -161,6 +161,7 @@ void FAnimNode_KawaiiPhysics::Initialize_AnyThread(const FAnimationInitializeCon
 	ApplyBoneConstraintDataAsset(RequiredBones);
 
 	ModifyBones.Empty();
+	OriginalChainLengths.Empty();
 
 	// For Avoiding Zero Divide in the first frame
 	DeltaTimeOld = 1.0f / static_cast<float>(GetEffectiveTargetFramerate());
@@ -680,6 +681,60 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 			}
 		}
 	}
+
+	// Distance-based LOD: automatically reduce quality by camera distance
+	if (bEnableDistanceLOD)
+	{
+		const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
+		if (SkelComp)
+		{
+			const FVector CamLocation = Output.AnimInstanceProxy->GetPlayerViewLocation();
+			const FVector CompLocation = SkelComp->GetComponentLocation();
+			const float Distance = FVector::Dist(CamLocation, CompLocation);
+
+			if (Distance > DistanceLODStart)
+			{
+				const float Alpha = FMath::Clamp(
+					(Distance - DistanceLODStart) / FMath::Max(DistanceLODEnd - DistanceLODStart, 1.0f),
+					0.0f, 1.0f);
+
+				// Reduce simulation quality based on distance
+				for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+				{
+					// Increase damping (more stable, less wobble)
+					Bone.PhysicsSettings.Damping = FMath::Lerp(Bone.PhysicsSettings.Damping, 0.95f, Alpha);
+					// Increase stiffness (pull towards pose more)
+					Bone.PhysicsSettings.Stiffness = FMath::Lerp(Bone.PhysicsSettings.Stiffness, 0.5f, Alpha);
+					// Reduce limit angle
+					if (Bone.PhysicsSettings.LimitAngle > 0)
+					{
+						Bone.PhysicsSettings.LimitAngle *= (1.0f - Alpha * 0.7f);
+					}
+				}
+
+				// Disable world collision at far distances
+				if (Alpha > 0.5f)
+				{
+					bAllowWorldCollision = false;
+				}
+
+				// Reduce constraint iterations
+				if (Alpha > 0.3f)
+				{
+					const int32 ReducedIterations = FMath::Max(1, (int32)(BoneConstraintIterationCountBeforeCollision * (1.0f - Alpha)));
+					BoneConstraintIterationCountBeforeCollision = ReducedIterations;
+					BoneConstraintIterationCountAfterCollision = ReducedIterations;
+				}
+
+				// Force component space at far LOD (cheaper)
+				if (bForceComponentSpaceAtFarLOD && Alpha > 0.8f)
+				{
+					SimulationSpace = EKawaiiPhysicsSimulationSpace::ComponentSpace;
+				}
+			}
+		}
+	}
+
 	UpdateSphericalLimits(SphericalLimits, Output, BoneContainer, ComponentTransform);
 	UpdateSphericalLimits(SphericalLimitsData, Output, BoneContainer, ComponentTransform);
 	UpdateCapsuleLimits(CapsuleLimits, Output, BoneContainer, ComponentTransform);

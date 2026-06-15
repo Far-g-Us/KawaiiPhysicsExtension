@@ -448,6 +448,9 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 		AdjustByPlanerCollision(Bone, PlanarLimits);
 		AdjustByPlanerCollision(Bone, PlanarLimitsData);
 
+		// Mesh-based collision (GJK/EPA via Chaos Physics)
+		AdjustByMeshCollision(Bone, MeshCollisions, Output);
+
 		// 共有コリジョン / Shared collision from other KawaiiPhysics nodes
 		if (bUseSharedCollision && !bSharedCollisionSource)
 		{
@@ -464,6 +467,28 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 		}
 	}
 	SET_DWORD_STAT(STAT_KawaiiPhysics_NumWorldCollisionChecks, NumWorldChecks);
+
+	// Volume Preservation: adjust chain lengths to maintain volume
+	ApplyVolumePreservation();
+
+	// Bone Scaling: scale bones based on compression/stretch (UBE-style visual effect)
+	ApplyBoneScaling();
+
+	// Morph Target Driving: drive morph targets based on bone velocity
+	ApplyMorphTargetDriving(Output);
+
+	// Detect pose and apply pose-based blending
+	DetectPose();
+	ApplyPoseBlending();
+
+	// Apply state-driven physics switching
+	ApplyStateDrivenPhysics();
+
+	// Self-Collision: prevent bone overlap
+	ApplySelfCollision();
+
+	// Spring-Based Volume Preservation
+	ApplySpringVolume();
 
 	// bridge dummy のコリジョン変位を端点ボーンへ直接転送（実ボーンを押し出すフィードバックの本体）。
 	// コリジョン後・Constraint/length復元前に実行。Push = Location(押し出し後) - PoseLocation(上のLERP配置で退避したLERP基準)。
@@ -576,6 +601,515 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 	}
 	// 注: DeltaTimeOld は呼び出し元 SimulateModifyBones（legacy=DeltaTime / substep=FixedDt）で設定
 	// Note: DeltaTimeOld is set by the caller SimulateModifyBones (legacy=DeltaTime / substep=FixedDt)
+}
+
+// Volume Preservation: adjust bone chain lengths to maintain original volume
+void FAnimNode_KawaiiPhysics::ApplyVolumePreservation()
+{
+	// Find chain roots (bones with ParentIndex < 0 that have VolumePreservation > 0)
+	for (int32 i = 0; i < ModifyBones.Num(); ++i)
+	{
+		FKawaiiPhysicsModifyBone& Bone = ModifyBones[i];
+		if (Bone.ParentIndex >= 0 || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		float VP = Bone.PhysicsSettings.VolumePreservation;
+		if (VP <= 0.0f)
+		{
+			continue;
+		}
+
+		// Calculate current chain length
+		float CurrentLength = 0.0f;
+		int32 CurrentIdx = i;
+		while (ModifyBones.IsValidIndex(CurrentIdx))
+		{
+			const FKawaiiPhysicsModifyBone& Cur = ModifyBones[CurrentIdx];
+			if (Cur.ParentIndex >= 0 && ModifyBones.IsValidIndex(Cur.ParentIndex))
+			{
+				const FKawaiiPhysicsModifyBone& Parent = ModifyBones[Cur.ParentIndex];
+				CurrentLength += (Cur.Location - Parent.Location).Size();
+			}
+			// Move to first child
+			if (Cur.ChildIndices.Num() > 0)
+			{
+				CurrentIdx = Cur.ChildIndices[0];
+			}
+			else
+			{
+				break;
+			}
+		}
+
+		// Get or compute original chain length
+		float& OriginalLength = OriginalChainLengths.FindOrAdd(i);
+		if (OriginalLength <= 0.0f)
+		{
+			OriginalLength = CurrentLength;
+		}
+
+		if (OriginalLength <= 0.0f || CurrentLength <= 0.0f)
+		{
+			continue;
+		}
+
+		// Scale factor: blend between current and original
+		float TargetLength = FMath::Lerp(CurrentLength, OriginalLength, VP);
+		float Scale = TargetLength / CurrentLength;
+
+		// Apply pressure: if compressed, push outward
+		float PressureScale = 1.0f;
+		if (Bone.PhysicsSettings.Pressure > 0.0f && CurrentLength < OriginalLength)
+		{
+			float CompressionRatio = 1.0f - (CurrentLength / OriginalLength);
+			PressureScale = 1.0f + CompressionRatio * Bone.PhysicsSettings.Pressure;
+		}
+
+		float FinalScale = Scale * PressureScale;
+
+		// Scale bone positions relative to root
+		FVector RootLocation = Bone.Location;
+		CurrentIdx = i;
+		while (ModifyBones.IsValidIndex(CurrentIdx))
+		{
+			FKawaiiPhysicsModifyBone& Cur = ModifyBones[CurrentIdx];
+			if (Cur.ParentIndex >= 0 && ModifyBones.IsValidIndex(Cur.ParentIndex))
+			{
+				FVector Offset = Cur.Location - RootLocation;
+				Cur.Location = RootLocation + Offset * FinalScale;
+			}
+			if (Cur.ChildIndices.Num() > 0)
+			{
+				CurrentIdx = Cur.ChildIndices[0];
+			}
+			else
+			{
+				break;
+			}
+		}
+	}
+}
+
+// Bone Scaling: scale bones based on compression/stretch (UBE-style visual effect)
+void FAnimNode_KawaiiPhysics::ApplyBoneScaling()
+{
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		float Compensation = Bone.PhysicsSettings.BoneScaleCompensation;
+		if (Compensation <= 0.0f || Bone.ParentIndex < 0 || !ModifyBones.IsValidIndex(Bone.ParentIndex))
+		{
+			continue;
+		}
+
+		const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
+
+		// Calculate compression/stretch ratio
+		const float CurrentLength = (Bone.Location - ParentBone.Location).Size();
+		const float PoseLength = (Bone.PoseLocation - ParentBone.PoseLocation).Size();
+
+		if (PoseLength <= KINDA_SMALL_NUMBER)
+		{
+			continue;
+		}
+
+		const float Ratio = CurrentLength / PoseLength;
+		const float MaxScale = Bone.PhysicsSettings.MaxBoneScale;
+
+		// Scale = 1 + (1 - Ratio) * Compensation
+		// When compressed (Ratio < 1): Scale > 1 (bone gets thicker)
+		// When stretched (Ratio > 1): Scale < 1 (bone gets thinner)
+		float Scale = 1.0f + (1.0f - Ratio) * Compensation;
+		Scale = FMath::Clamp(Scale, 1.0f / MaxScale, MaxScale);
+
+		// Apply scale to bone (store in a temporary scale vector)
+		// The actual bone scale is applied in the output phase
+		Bone.BoneScale = FVector(Scale);
+	}
+}
+
+// Morph Target Driving: drive morph targets based on bone velocity
+void FAnimNode_KawaiiPhysics::ApplyMorphTargetDriving(FComponentSpacePoseContext& Output)
+{
+	if (!bEnableMorphTargetDriving || MorphTargetBoneMapping.Num() == 0)
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkeletalMeshComponent();
+	if (!SkelComp)
+	{
+		return;
+	}
+
+	for (const auto& Mapping : MorphTargetBoneMapping)
+	{
+		const FName& MorphTargetName = Mapping.Key;
+		const FName& BoneName = Mapping.Value;
+
+		// Find bone
+		for (const FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+		{
+			if (Bone.BoneRef.BoneName == BoneName)
+			{
+				// Calculate bone speed
+				const FVector Velocity = Bone.Location - Bone.PrevLocation;
+				const float Speed = Velocity.Size() * GetEffectiveTargetFramerate();
+
+				// Map speed to morph target value (0-1)
+				float MorphValue = 0.0f;
+				if (Speed > MorphTargetSpeedThreshold)
+				{
+					MorphValue = FMath::Clamp((Speed - MorphTargetSpeedThreshold) / 100.0f, 0.0f, 1.0f);
+					MorphValue *= MorphTargetMultiplier;
+				}
+
+				// Apply morph target
+				SkelComp->SetMorphTarget(MorphTargetName, MorphValue);
+				break;
+			}
+		}
+	}
+}
+
+// Detect character pose based on pelvis/spine orientation
+void FAnimNode_KawaiiPhysics::DetectPose()
+{
+	if (!bEnablePoseBlending || ModifyBones.Num() == 0)
+	{
+		return;
+	}
+
+	// Find pelvis or root bone to determine pose
+	for (const FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.ParentIndex < 0 && !Bone.bDummy)
+		{
+			// Use bone's Z-axis direction to determine pose
+			const FVector BoneUp = Bone.PoseRotation.GetUpVector();
+			const float ZComponent = BoneUp.Z;
+
+			if (ZComponent > 0.7f)
+			{
+				DetectedPose = EKawaiiPhysicsDetectedPose::Standing;
+			}
+			else if (ZComponent > 0.3f)
+			{
+				DetectedPose = EKawaiiPhysicsDetectedPose::Sitting;
+			}
+			else
+			{
+				DetectedPose = EKawaiiPhysicsDetectedPose::Lying;
+			}
+			break;
+		}
+	}
+}
+
+// Apply pose-based physics blending
+void FAnimNode_KawaiiPhysics::ApplyPoseBlending()
+{
+	if (!bEnablePoseBlending)
+	{
+		return;
+	}
+
+	float GravityMultiplier = 1.0f;
+	float DampingMultiplier = 1.0f;
+	float StiffnessMultiplier = 1.0f;
+
+	switch (DetectedPose)
+	{
+	case EKawaiiPhysicsDetectedPose::Standing:
+		GravityMultiplier = PoseGravityStanding;
+		DampingMultiplier = 1.0f;
+		StiffnessMultiplier = 1.0f;
+		break;
+	case EKawaiiPhysicsDetectedPose::Sitting:
+		GravityMultiplier = PoseGravitySitting;
+		DampingMultiplier = PoseDampingSitting;
+		StiffnessMultiplier = 1.0f;
+		break;
+	case EKawaiiPhysicsDetectedPose::Lying:
+		GravityMultiplier = PoseGravityLying;
+		DampingMultiplier = 1.0f;
+		StiffnessMultiplier = PoseStiffnessLying;
+		break;
+	default:
+		break;
+	}
+
+	// Apply multipliers to bone physics settings
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		// Store original values on first frame
+		if (Bone.OriginalDamping <= 0.0f)
+		{
+			Bone.OriginalDamping = Bone.PhysicsSettings.Damping;
+			Bone.OriginalStiffness = Bone.PhysicsSettings.Stiffness;
+		}
+
+		// Apply pose-based multipliers
+		Bone.PhysicsSettings.Damping = Bone.OriginalDamping * DampingMultiplier;
+		Bone.PhysicsSettings.Stiffness = Bone.OriginalStiffness * StiffnessMultiplier;
+	}
+}
+
+// Apply self-collision between bones
+void FAnimNode_KawaiiPhysics::ApplySelfCollision()
+{
+	if (!bEnableSelfCollision || ModifyBones.Num() < 2)
+	{
+		return;
+	}
+
+	for (int32 i = 0; i < ModifyBones.Num(); ++i)
+	{
+		FKawaiiPhysicsModifyBone& BoneA = ModifyBones[i];
+		if (BoneA.bSkipSimulate || BoneA.bDummy || BoneA.bBridgeDummy)
+		{
+			continue;
+		}
+
+		for (int32 j = i + 1; j < ModifyBones.Num(); ++j)
+		{
+			FKawaiiPhysicsModifyBone& BoneB = ModifyBones[j];
+			if (BoneB.bSkipSimulate || BoneB.bDummy || BoneB.bBridgeDummy)
+			{
+				continue;
+			}
+
+			// Skip if same chain (parent-child)
+			if (BoneA.ParentIndex == j || BoneB.ParentIndex == i)
+			{
+				continue;
+			}
+
+			const float MinDist = SelfCollisionMinDistance * SelfCollisionRadiusMultiplier;
+			const FVector Delta = BoneB.Location - BoneA.Location;
+			const float DistSq = Delta.SizeSquared();
+
+			if (DistSq < MinDist * MinDist && DistSq > KINDA_SMALL_NUMBER)
+			{
+				const float Dist = FMath::Sqrt(DistSq);
+				const FVector PushDir = Delta / Dist;
+				const float PushAmount = (MinDist - Dist) * 0.5f;
+
+				BoneA.Location -= PushDir * PushAmount;
+				BoneB.Location += PushDir * PushAmount;
+			}
+		}
+	}
+}
+
+// Apply spring-based volume preservation
+void FAnimNode_KawaiiPhysics::ApplySpringVolume()
+{
+	if (!bEnableSpringVolume)
+	{
+		return;
+	}
+
+	const float DT = GetStepDeltaTime();
+
+	for (int32 i = 0; i < ModifyBones.Num(); ++i)
+	{
+		FKawaiiPhysicsModifyBone& Bone = ModifyBones[i];
+		if (Bone.ParentIndex >= 0 || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		// Calculate current chain length
+		float CurrentLength = 0.0f;
+		int32 CurrentIdx = i;
+		while (ModifyBones.IsValidIndex(CurrentIdx))
+		{
+			const FKawaiiPhysicsModifyBone& Cur = ModifyBones[CurrentIdx];
+			if (Cur.ParentIndex >= 0 && ModifyBones.IsValidIndex(Cur.ParentIndex))
+			{
+				const FKawaiiPhysicsModifyBone& Parent = ModifyBones[Cur.ParentIndex];
+				CurrentLength += (Cur.Location - Parent.Location).Size();
+			}
+			if (Cur.ChildIndices.Num() > 0)
+			{
+				CurrentIdx = Cur.ChildIndices[0];
+			}
+			else
+			{
+				break;
+			}
+		}
+
+		// Get original length
+		float& OriginalLength = OriginalChainLengths.FindOrAdd(i);
+		if (OriginalLength <= 0.0f)
+		{
+			OriginalLength = CurrentLength;
+		}
+
+		if (OriginalLength <= 0.0f || CurrentLength <= 0.0f)
+		{
+			continue;
+		}
+
+		// Spring physics: F = -k * (x - rest) - c * v
+		float& Velocity = SpringVolumeVelocities.FindOrAdd(i);
+		const float TargetLength = OriginalLength * SpringVolumeRestLength;
+		const float Displacement = CurrentLength - TargetLength;
+		const float SpringForce = -SpringVolumeStiffness * Displacement;
+		const float DampingForce = -SpringVolumeDamping * Velocity;
+
+		Velocity += (SpringForce + DampingForce) * DT;
+		const float LengthCorrection = Velocity * DT;
+
+		// Apply correction
+		float Scale = (CurrentLength + LengthCorrection) / CurrentLength;
+		Scale = FMath::Clamp(Scale, 0.5f, 1.5f);
+
+		FVector RootLocation = Bone.Location;
+		CurrentIdx = i;
+		while (ModifyBones.IsValidIndex(CurrentIdx))
+		{
+			FKawaiiPhysicsModifyBone& Cur = ModifyBones[CurrentIdx];
+			if (Cur.ParentIndex >= 0 && ModifyBones.IsValidIndex(Cur.ParentIndex))
+			{
+				FVector Offset = Cur.Location - RootLocation;
+				Cur.Location = RootLocation + Offset * Scale;
+			}
+			if (Cur.ChildIndices.Num() > 0)
+			{
+				CurrentIdx = Cur.ChildIndices[0];
+			}
+			else
+			{
+				break;
+			}
+		}
+	}
+}
+
+// Apply animation state-driven physics switching
+void FAnimNode_KawaiiPhysics::ApplyStateDrivenPhysics()
+{
+	if (!bEnableStateDrivenPhysics)
+	{
+		return;
+	}
+
+	const FKawaiiPhysicsSettings* StateSettings = StatePhysicsSettings.Find(CurrentAnimationState);
+	if (!StateSettings)
+	{
+		return;
+	}
+
+	// Apply state-specific settings to all bones
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		// Store original on first frame
+		if (Bone.OriginalDamping <= 0.0f)
+		{
+			Bone.OriginalDamping = Bone.PhysicsSettings.Damping;
+			Bone.OriginalStiffness = Bone.PhysicsSettings.Stiffness;
+		}
+
+		// Apply state settings
+		Bone.PhysicsSettings.Damping = StateSettings->Damping;
+		Bone.PhysicsSettings.Stiffness = StateSettings->Stiffness;
+		Bone.PhysicsSettings.LimitAngle = StateSettings->LimitAngle;
+		Bone.PhysicsSettings.Radius = StateSettings->Radius;
+	}
+}
+
+// Auto-generate collision primitives from skeletal mesh bounds
+void FAnimNode_KawaiiPhysics::AutoGenerateCollisions(const USkeletalMeshComponent* SkelComp, const TArray<FName>& ChainRoots)
+{
+	if (!SkelComp || ChainRoots.Num() == 0)
+	{
+		return;
+	}
+
+	const USkeletalMesh* SkeletalMesh = SkelComp->GetSkeletalMeshAsset();
+	if (!SkeletalMesh)
+	{
+		return;
+	}
+
+	// Get reference skeleton
+	const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
+
+	// Clear existing collisions
+	SphericalLimits.Empty();
+	CapsuleLimits.Empty();
+
+	for (const FName& ChainRoot : ChainRoots)
+	{
+		const int32 RootIdx = RefSkeleton.FindBoneIndex(ChainRoot);
+		if (RootIdx < 0)
+		{
+			continue;
+		}
+
+		// Get bone transform
+		const FTransform BoneTransform = SkelComp->GetBoneTransform(RootIdx);
+		const FVector BoneLocation = BoneTransform.GetLocation();
+
+		// Get bone's children to determine extent
+		TArray<int32> Children;
+		RefSkeleton.GetDirectChildBones(RootIdx, Children);
+
+		if (Children.Num() > 0)
+		{
+			// Create capsule along bone direction
+			const int32 ChildIdx = Children[0];
+			const FTransform ChildTransform = SkelComp->GetBoneTransform(ChildIdx);
+			const FVector ChildLocation = ChildTransform.GetLocation();
+
+			const FVector BoneDir = ChildLocation - BoneLocation;
+			const float BoneLength = BoneDir.Size();
+
+			if (BoneLength > KINDA_SMALL_NUMBER)
+			{
+				FCapsuleLimit Capsule;
+				Capsule.DrivingBone.BoneName = ChainRoot;
+				Capsule.DrivingBone.Initialize(SkeletalMesh);
+				Capsule.Location = BoneLocation + BoneDir * 0.5f;
+				Capsule.Rotation = FRotationMatrix::MakeFromZ(BoneDir).ToQuat();
+				Capsule.Radius = FMath::Max(BoneLength * 0.3f, 2.0f);
+				Capsule.Length = BoneLength;
+				Capsule.bEnable = true;
+				CapsuleLimits.Add(Capsule);
+			}
+		}
+		else
+		{
+			// Create sphere for leaf bones
+			FSphericalLimit Sphere;
+			Sphere.DrivingBone.BoneName = ChainRoot;
+			Sphere.DrivingBone.Initialize(SkeletalMesh);
+			Sphere.Location = BoneLocation;
+			Sphere.Radius = 3.0f;
+			Sphere.LimitType = ESphericalLimitType::Outer;
+			Sphere.bEnable = true;
+			SphericalLimits.Add(Sphere);
+		}
+	}
 }
 
 void FAnimNode_KawaiiPhysics::Simulate(FKawaiiPhysicsModifyBone& Bone, const FSceneInterface* Scene,

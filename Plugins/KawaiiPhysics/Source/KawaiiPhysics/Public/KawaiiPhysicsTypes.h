@@ -18,6 +18,22 @@ enum class EKawaiiPhysicsSimulationSpace : uint8
 };
 
 /**
+ * Detected pose for pose-based physics blending.
+ */
+UENUM(BlueprintType)
+enum class EKawaiiPhysicsDetectedPose : uint8
+{
+	/** Standing pose (normal gravity) */
+	Standing,
+	/** Sitting pose (reduced gravity, more stable) */
+	Sitting,
+	/** Lying pose (horizontal, gravity pulls sideways) */
+	Lying,
+	/** Custom pose (user-defined) */
+	Custom,
+};
+
+/**
  * Enum representing the planar constraint axis in KawaiiPhysics.
  */
 UENUM(meta=(ScriptName = "KP_PlanarConstraint"))
@@ -155,6 +171,40 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsSettings
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", EditCondition = "bUseTwistSwingLimits"), category = "KawaiiPhysics")
 	float SwingLimitZAngle = 0.0f;
+
+	/**
+	* Volume Preservation: attempts to maintain the volume of the bone chain by adjusting bone lengths.
+	* Useful for breast/buttock/belly physics. 0 = disabled, 1 = strong preservation.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", ClampMax = "1"), category = "KawaiiPhysics|VolumePreservation")
+	float VolumePreservation = 0.0f;
+
+	/**
+	* Pressure simulation: when volume is compressed (e.g. collision), bones push outward.
+	* Works with VolumePreservation. 0 = no pressure, high = strong outward force.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", ClampMax = "5", EditCondition = "VolumePreservation > 0"), category = "KawaiiPhysics|VolumePreservation")
+	float Pressure = 0.0f;
+
+	/**
+	* Bone Scaling: automatically scale bone when it moves.
+	* Creates visual bulging/compression effect like UBE 2.0.
+	* X axis = scale when compressed, Y axis = scale when stretched.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", ClampMax = "2"), category = "KawaiiPhysics|BoneScaling")
+	float BoneScaleCompensation = 0.0f;
+
+	/**
+	* Maximum bone scale factor (prevents extreme scaling).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.1", ClampMax = "3.0", EditCondition = "BoneScaleCompensation > 0"), category = "KawaiiPhysics|BoneScaling")
+	float MaxBoneScale = 1.5f;
+
+	/**
+	* Axis for bone scaling: 0 = uniform, 1 = X-axis only, 2 = Y-axis, 3 = Z-axis.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "BoneScaleCompensation > 0"), category = "KawaiiPhysics|BoneScaling")
+	int32 BoneScaleAxis = 0;
 };
 
 /**
@@ -196,6 +246,18 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsModifyBone
 	/** Previous rotation of the bone */
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")
 	FQuat PrevRotation = FQuat::Identity;
+
+	/** Bone scale for visual bulging/compression (calculated by ApplyBoneScaling) */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")
+	FVector BoneScale = FVector(1.0f);
+
+	/** Original damping value (stored for pose blending) */
+	UPROPERTY()
+	float OriginalDamping = 0.0f;
+
+	/** Original stiffness value (stored for pose blending) */
+	UPROPERTY()
+	float OriginalStiffness = 0.0f;
 
 	/** Pose location of the bone */
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")

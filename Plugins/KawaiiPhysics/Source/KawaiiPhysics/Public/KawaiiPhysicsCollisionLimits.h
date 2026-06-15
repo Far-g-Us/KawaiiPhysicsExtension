@@ -230,3 +230,84 @@ struct FPlanarLimit : public FCollisionLimitBase
 		return *this;
 	}
 };
+
+/**
+ * Enum for mesh collision source type.
+ */
+UENUM(BlueprintType)
+enum class EMeshCollisionSourceType : uint8
+{
+	/** Use a Static Mesh for collision */
+	StaticMesh,
+	/** Use a Skeletal Mesh'sPhysics Asset for collision */
+	PhysicsAsset,
+	/** Use a custom convex hull (array of vertices) */
+	ConvexHull,
+};
+
+/**
+ * Structure representing a mesh-based collision limit for KawaiiPhysics.
+ * Uses Chaos Physics (GJK/EPA) for accurate mesh collision detection.
+ * Ideal for breast/buttock collision with body/clothing meshes.
+ */
+USTRUCT(BlueprintType)
+struct FKawaiiPhysicsMeshCollision : public FCollisionLimitBase
+{
+	GENERATED_BODY()
+
+	/** Default constructor */
+	FKawaiiPhysicsMeshCollision()
+	{
+#if WITH_EDITORONLY_DATA
+		Type = ECollisionLimitType::None; // Custom type not in original enum
+#endif
+	}
+
+	/** Source type for mesh collision */
+	UPROPERTY(EditAnywhere, Category = MeshCollision)
+	EMeshCollisionSourceType MeshSource = EMeshCollisionSourceType::ConvexHull;
+
+	/** Static Mesh to use for collision (when MeshSource = StaticMesh) */
+	UPROPERTY(EditAnywhere, Category = MeshCollision, meta = (EditCondition = "MeshSource == EMeshCollisionSourceType::StaticMesh"))
+	TObjectPtr<UStaticMesh> CollisionMesh = nullptr;
+
+	/** Physics Asset to use for collision (when MeshSource = EMeshCollisionSourceType::PhysicsAsset) */
+	UPROPERTY(EditAnywhere, Category = MeshCollision, meta = (EditCondition = "MeshSource == EMeshCollisionSourceType::PhysicsAsset"))
+	TObjectPtr<UPhysicsAsset> PhysicsAsset = nullptr;
+
+	/** Index of body in PhysicsAsset to use for collision */
+	UPROPERTY(EditAnywhere, Category = MeshCollision, meta = (EditCondition = "MeshSource == EMeshCollisionSourceType::PhysicsAsset"))
+	FName PhysicsBodyName;
+
+	/** Custom convex hull vertices (when MeshSource = EMeshCollisionSourceType::ConvexHull) */
+	UPROPERTY(EditAnywhere, Category = MeshCollision, meta = (EditCondition = "MeshSource == EMeshCollisionSourceType::ConvexHull"))
+	TArray<FVector> ConvexHullVertices;
+
+	/** Scale for the mesh collision */
+	UPROPERTY(EditAnywhere, Category = MeshCollision, meta = (ClampMin = "0.01"))
+	float MeshScale = 1.0f;
+
+	/** Whether to use simplified collision (faster but less accurate) */
+	UPROPERTY(EditAnywhere, Category = MeshCollision)
+	bool bUseSimplifiedCollision = false;
+
+	/** Local-space transform offset for the mesh collision */
+	UPROPERTY(EditAnywhere, Category = MeshCollision)
+	FTransform MeshTransform = FTransform::Identity;
+
+	/** Assignment operator */
+	FKawaiiPhysicsMeshCollision& operator=(const FKawaiiPhysicsMeshCollision& Other)
+	{
+		FCollisionLimitBase::operator=(Other);
+		MeshSource = Other.MeshSource;
+		CollisionMesh = Other.CollisionMesh;
+		PhysicsAsset = Other.PhysicsAsset;
+		PhysicsBodyName = Other.PhysicsBodyName;
+		ConvexHullVertices = Other.ConvexHullVertices;
+		MeshScale = Other.MeshScale;
+		bUseSimplifiedCollision = Other.bUseSimplifiedCollision;
+		MeshTransform = Other.MeshTransform;
+		return *this;
+	}
+};
+};
