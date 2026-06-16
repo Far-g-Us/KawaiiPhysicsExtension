@@ -16,6 +16,13 @@ void FKawaiiPhysics_ExternalForce_WindZone::Apply(FKawaiiPhysicsModifyBone& Bone
                                                     const FTransform& BoneTM)
 {
 	const FVector ZoneCenter = GetZoneCenter();
+
+	// Guard against null AnimInstanceProxy
+	if (!PoseContext.AnimInstanceProxy)
+	{
+		return;
+	}
+
 	const FVector BoneWorldPos = PoseContext.AnimInstanceProxy->GetComponentTransform().TransformPosition(Bone.Location);
 	const FVector ToBone = BoneWorldPos - ZoneCenter;
 
@@ -30,17 +37,26 @@ void FKawaiiPhysics_ExternalForce_WindZone::Apply(FKawaiiPhysicsModifyBone& Bone
 	switch (Shape)
 	{
 	case EKawaiiPhysicsWindZoneShape::Sphere:
-		NormalizedDistance = ToBone.Size() / ZoneSize;
+		// Guard against zero ZoneSize to prevent division by zero
+		if (ZoneSize > 0.0f)
+		{
+			NormalizedDistance = ToBone.Size() / ZoneSize;
+		}
 		break;
 	case EKawaiiPhysicsWindZoneShape::Box:
-		NormalizedDistance = FMath::Max3(
-			FMath::Abs(ToBone.X) / ZoneSize,
-			FMath::Abs(ToBone.Y) / ZoneSizeY,
-			FMath::Abs(ToBone.Z) / ZoneSizeZ);
+		{
+			float DX = ZoneSize > 0.0f ? FMath::Abs(ToBone.X) / ZoneSize : 0.0f;
+			float DY = ZoneSizeY > 0.0f ? FMath::Abs(ToBone.Y) / ZoneSizeY : 0.0f;
+			float DZ = ZoneSizeZ > 0.0f ? FMath::Abs(ToBone.Z) / ZoneSizeZ : 0.0f;
+			NormalizedDistance = FMath::Max3(DX, DY, DZ);
+		}
 		break;
 	case EKawaiiPhysicsWindZoneShape::Cone:
-		// Distance along cone axis / length
-		NormalizedDistance = ToBone.X / ZoneSize;
+		// Distance along cone axis / length - guard against zero
+		if (ZoneSize > 0.0f)
+		{
+			NormalizedDistance = ToBone.X / ZoneSize;
+		}
 		break;
 	}
 
@@ -63,7 +79,7 @@ void FKawaiiPhysics_ExternalForce_WindZone::Apply(FKawaiiPhysicsModifyBone& Bone
 		PoseContext, EKawaiiPhysicsSimulationSpace::WorldSpace, Node.SimulationSpace, WindVelocity);
 
 	// Apply wind as velocity offset (modify PrevLocation like Verlet integration)
-	const float DeltaTime = FMath::Max(Node.DeltaTimeOld, 0.001f);
+	const float DeltaTime = FMath::Clamp(FMath::Max(Node.DeltaTimeOld, 0.001f), 0.001f, 0.05f);
 	Bone.PrevLocation -= WindInSimSpace * DeltaTime;
 }
 

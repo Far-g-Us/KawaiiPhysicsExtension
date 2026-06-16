@@ -565,6 +565,8 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 	UPROPERTY(BlueprintReadOnly, Category = "Physics Settings|Budget")
 	bool bBudgetSkippedLastFrame = false;
 
+	double LastFrameEndTime = 0;
+
 	// --- Physics Material ---
 
 	/**
@@ -1155,10 +1157,11 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 	TArray<float> CachedLODDamping;
 	TArray<float> CachedLODStiffness;
 	TArray<float> CachedLODLimitAngle;
-	bool bCachedAllowWorldCollision = true;
+	float CachedAllowWorldCollision = 1.0f;
 	int32 CachedBeforeConstraintIterations = 0;
 	int32 CachedAfterConstraintIterations = 0;
 	EKawaiiPhysicsSimulationSpace CachedSimulationSpace = EKawaiiPhysicsSimulationSpace::WorldSpace;
+	bool bLODCacheSaved = false;
 
 	/**
 	* Detected pose for pose-based blending (Standing/Sitting/Lying).

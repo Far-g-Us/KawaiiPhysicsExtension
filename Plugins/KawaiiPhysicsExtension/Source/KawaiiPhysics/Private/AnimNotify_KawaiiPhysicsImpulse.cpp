@@ -36,7 +36,11 @@ void UAnimNotify_KawaiiPhysicsImpulse::Notify(USkeletalMeshComponent* MeshComp, 
 	TArray<UAnimInstance*> LinkedInstances;
 	AnimInstance->GetLinkedAnimInstances(LinkedInstances);
 
-	for (UAnimInstance* LinkedInstance : LinkedInstances)
+	// Also check the primary AnimInstance itself
+	TArray<UAnimInstance*> AllInstances = LinkedInstances;
+	AllInstances.AddUnique(AnimInstance);
+
+	for (UAnimInstance* LinkedInstance : AllInstances)
 	{
 		if (!LinkedInstance)
 		{

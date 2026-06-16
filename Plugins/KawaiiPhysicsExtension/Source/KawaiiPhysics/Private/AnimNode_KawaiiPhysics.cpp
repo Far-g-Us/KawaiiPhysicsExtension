@@ -243,9 +243,14 @@ void FAnimNode_KawaiiPhysics::GatherDebugData(FNodeDebugData& DebugData)
 #if ENABLE_ANIM_DEBUG
 void FAnimNode_KawaiiPhysics::AnimDrawDebug(FComponentSpacePoseContext& Output)
 {
-	if (const UWorld* World = Output.AnimInstanceProxy->GetSkelMeshComponent()->GetWorld(); !World->IsPreviewWorld())
+	const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
+	if (!SkelComp)
 	{
-		if (Output.AnimInstanceProxy->GetSkelMeshComponent()->bRecentlyRendered)
+		return;
+	}
+	if (const UWorld* World = SkelComp->GetWorld(); !World->IsPreviewWorld())
+	{
+		if (SkelComp->bRecentlyRendered)
 		{
 			if (CVarAnimNodeKawaiiPhysicsDebug.GetValueOnAnyThread())
 			{
@@ -506,8 +511,12 @@ void FAnimNode_KawaiiPhysics::AnimDrawDebugBox(FComponentSpacePoseContext& Outpu
 }
 #endif
 
+// ============================================================================
+// Main evaluation entry point — called per-frame from the animation graph.
+// Pipeline: IK Feedback → LOD override → Init bones → Sync → Simulate → Apply
+// ============================================================================
 void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output,
-                                                                TArray<FBoneTransform>& OutBoneTransforms)
+                                                                 TArray<FBoneTransform>& OutBoneTransforms)
 {
 	SCOPE_CYCLE_COUNTER(STAT_KawaiiPhysics_Eval);
 
@@ -655,7 +664,13 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 		}
 	}
 
+	// ============================================================================
 	// LOD-aware physics settings
+	// Two independent LOD systems can be active simultaneously:
+	//   1) bEnableLODSettings — per-LOD presets (DampingOverride, StiffnessOverride, etc.)
+	//   2) bEnableDistanceLOD — continuous distance-based quality reduction
+	// Both paths save originals via bLODCacheSaved (saved ONCE, restored ONCE).
+	// ============================================================================
 	if (bEnableLODSettings)
 	{
 		const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
@@ -664,16 +679,21 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 			const int32 CurrentLOD = SkelComp->GetPredictedLODLevel();
 			if (const FKawaiiPhysicsLODSettings* LODSetting = LODSettings.Find(CurrentLOD))
 			{
-				if (!LODSetting->bEnabled)
-				{
-					// Skip physics at this LOD
-					return;
-				}
+			if (!LODSetting->bEnabled)
+			{
+				// Skip physics at this LOD
+				return;
+			}
 
-				// Save original values before LOD overrides (restored after simulation)
+			// Save original values before LOD overrides (only once per frame)
+			if (!bLODCacheSaved)
+			{
 				CachedAllowWorldCollision = bAllowWorldCollision;
 				CachedBeforeConstraintIterations = BoneConstraintIterationCountBeforeCollision;
 				CachedAfterConstraintIterations = BoneConstraintIterationCountAfterCollision;
+				CachedSimulationSpace = SimulationSpace;
+				bLODCacheSaved = true;
+			}
 
 				// Re-apply base physics settings first to clear any stale LOD overrides from previous frames
 				UpdatePhysicsSettingsOfModifyBones();
@@ -732,14 +752,18 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 
 				CurrentDistanceLODAlpha = Alpha;
 
-				// Save original values before modification
+				// Save original values before modification (only once per frame)
+				if (!bLODCacheSaved)
+				{
+					CachedAllowWorldCollision = bAllowWorldCollision;
+					CachedBeforeConstraintIterations = BoneConstraintIterationCountBeforeCollision;
+					CachedAfterConstraintIterations = BoneConstraintIterationCountAfterCollision;
+					CachedSimulationSpace = SimulationSpace;
+					bLODCacheSaved = true;
+				}
 				CachedLODDamping.SetNum(ModifyBones.Num());
 				CachedLODStiffness.SetNum(ModifyBones.Num());
 				CachedLODLimitAngle.SetNum(ModifyBones.Num());
-				CachedAllowWorldCollision = bAllowWorldCollision;
-				CachedBeforeConstraintIterations = BoneConstraintIterationCountBeforeCollision;
-				CachedAfterConstraintIterations = BoneConstraintIterationCountAfterCollision;
-				CachedSimulationSpace = SimulationSpace;
 
 				// Reduce simulation quality based on distance
 				for (int32 i = 0; i < ModifyBones.Num(); ++i)
@@ -784,6 +808,22 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 			// Crowd optimization: completely disable physics at extreme distances
 			if (bDisablePhysicsAtFarLOD && Distance > DistanceLODDisablePhysicsAt)
 			{
+				// Restore LOD overrides before returning
+				if (bLODCacheSaved)
+				{
+					for (int32 i = 0; i < ModifyBones.Num() && i < CachedLODDamping.Num(); ++i)
+					{
+						ModifyBones[i].PhysicsSettings.Damping = CachedLODDamping[i];
+						ModifyBones[i].PhysicsSettings.Stiffness = CachedLODStiffness[i];
+						ModifyBones[i].PhysicsSettings.LimitAngle = CachedLODLimitAngle[i];
+					}
+					bAllowWorldCollision = CachedAllowWorldCollision;
+					BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
+					BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
+					SimulationSpace = CachedSimulationSpace;
+					CurrentDistanceLODAlpha = 0.0f;
+					bLODCacheSaved = false;
+				}
 				// Skip all physics — bones stay at animation pose
 				for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
 				{
@@ -846,17 +886,21 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 		bNeedWarmUp = false;
 	}
 
+	// ============================================================================
+	// Teleport handling: snap bones to animation pose to avoid long trails
+	// when the character is moved large distances in a single frame.
+	// WorldSpace: convert prev location from component space to avoid trail
+	// Non-WorldSpace: skip simulation, bones stay at animation pose
+	// ============================================================================
 	// SkipSimulate if Teleport in WorldSpace
 	if (SimulationSpace == EKawaiiPhysicsSimulationSpace::WorldSpace &&
 		TeleportType == ETeleportType::TeleportPhysics)
 	{
 		for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
 		{
-			FVector PrevLocationCS = PreSkelCompTransform.InverseTransformPosition(Bone.PrevLocation);
-			Bone.Location = ConvertSimulationSpaceLocation(Output, EKawaiiPhysicsSimulationSpace::ComponentSpace,
-			                                               SimulationSpace, PrevLocationCS);
+			// PrevLocation is already in WorldSpace — no conversion needed
 			Bone.PrevPrevLocation = Bone.PrevLocation;
-			Bone.PrevLocation = Bone.Location;
+			Bone.Location = Bone.PrevLocation;
 		}
 
 		// テレポート時はサブステップの未消費時間を破棄し、ポーズ補間を次フレームで再初期化
@@ -878,26 +922,23 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 	ApplySimulateResult(Output, BoneContainer, OutBoneTransforms);
 
 	// Restore original values corrupted by LOD overrides (both LOD Settings and Distance-LOD paths)
-	if (CurrentDistanceLODAlpha > 0.0f)
+	if (bLODCacheSaved)
 	{
-		for (int32 i = 0; i < ModifyBones.Num() && i < CachedLODDamping.Num(); ++i)
+		if (CurrentDistanceLODAlpha > 0.0f)
 		{
-			ModifyBones[i].PhysicsSettings.Damping = CachedLODDamping[i];
-			ModifyBones[i].PhysicsSettings.Stiffness = CachedLODStiffness[i];
-			ModifyBones[i].PhysicsSettings.LimitAngle = CachedLODLimitAngle[i];
+			for (int32 i = 0; i < ModifyBones.Num() && i < CachedLODDamping.Num(); ++i)
+			{
+				ModifyBones[i].PhysicsSettings.Damping = CachedLODDamping[i];
+				ModifyBones[i].PhysicsSettings.Stiffness = CachedLODStiffness[i];
+				ModifyBones[i].PhysicsSettings.LimitAngle = CachedLODLimitAngle[i];
+			}
+			CurrentDistanceLODAlpha = 0.0f;
 		}
 		bAllowWorldCollision = CachedAllowWorldCollision;
 		BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
 		BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
 		SimulationSpace = CachedSimulationSpace;
-		CurrentDistanceLODAlpha = 0.0f;
-	}
-	else if (bEnableLODSettings)
-	{
-		// LOD Settings path may have modified these; restore originals
-		bAllowWorldCollision = CachedAllowWorldCollision;
-		BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
-		BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
+		bLODCacheSaved = false;
 	}
 
 	TeleportType = ETeleportType::None;
@@ -974,7 +1015,7 @@ void FAnimNode_KawaiiPhysics::RuntimeDebugDraw(const USkeletalMeshComponent* Ske
 	// Draw spherical limits (orange spheres)
 	for (const FSphericalLimit& Limit : SphericalLimits)
 	{
-		if (Limit.bEnable)
+		if (Limit.bEnable && Limit.DrivingBone.IsValidToEvaluate())
 		{
 			const FVector LimitLocation = SkelComp->GetBoneTransform(Limit.DrivingBone.BoneIndex).GetLocation()
 				+ Limit.Location;
@@ -986,7 +1027,7 @@ void FAnimNode_KawaiiPhysics::RuntimeDebugDraw(const USkeletalMeshComponent* Ske
 	// Draw capsule limits (blue capsules)
 	for (const FCapsuleLimit& Limit : CapsuleLimits)
 	{
-		if (Limit.bEnable)
+		if (Limit.bEnable && Limit.DrivingBone.IsValidToEvaluate())
 		{
 			const FVector LimitLocation = SkelComp->GetBoneTransform(Limit.DrivingBone.BoneIndex).GetLocation()
 				+ Limit.Location;

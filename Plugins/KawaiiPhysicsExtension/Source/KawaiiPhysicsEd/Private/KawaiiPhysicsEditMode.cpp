@@ -109,7 +109,7 @@ void FKawaiiPhysicsExtensionEditMode::Render(const FSceneView* View, FViewport* 
 	const USkeletalMeshComponent* SkelMeshComp = GetAnimPreviewScene().GetPreviewMeshComponent();
 
 	if (SkelMeshComp && SkelMeshComp->GetSkeletalMeshAsset() && SkelMeshComp->GetSkeletalMeshAsset()->GetSkeleton() &&
-		FAnimWeight::IsRelevant(RuntimeNode->GetAlpha() && RuntimeNode->IsRecentlyEvaluated()))
+		FAnimWeight::IsRelevant(RuntimeNode->GetAlpha()) && RuntimeNode->IsRecentlyEvaluated())
 	{
 		RenderModifyBones(PDI);
 		RenderLimitAngle(PDI);
@@ -181,6 +181,10 @@ void FKawaiiPhysicsExtensionEditMode::RenderModifyBones(FPrimitiveDrawInterface*
 
 			for (const int32 ChildIndex : Bone.ChildIndices)
 			{
+				if (!RuntimeNode->ModifyBones.IsValidIndex(ChildIndex))
+				{
+					continue;
+				}
 				FVector ChildBoneLocation = RuntimeNode->ModifyBones[ChildIndex].Location;
 				if (RuntimeNode->SimulationSpace == EKawaiiPhysicsSimulationSpace::BaseBoneSpace)
 				{
@@ -769,10 +773,17 @@ void FKawaiiPhysicsExtensionEditMode::OnExternalNodePropertyChange(FPropertyChan
 
 	if (InPropertyEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(FAnimNode_KawaiiPhysics, LimitsDataAsset))
 	{
+		// Remove old delegate if exists
+		if (LimitsDataAssetPropertyDelegateHandle.IsValid())
+		{
+			RuntimeNode->LimitsDataAsset->OnLimitsChanged.Remove(LimitsDataAssetPropertyDelegateHandle);
+			LimitsDataAssetPropertyDelegateHandle.Reset();
+		}
 		if (RuntimeNode->LimitsDataAsset)
 		{
-			RuntimeNode->LimitsDataAsset->OnLimitsChanged.AddRaw(
-				this, &FKawaiiPhysicsExtensionEditMode::OnLimitDataAssetPropertyChange);
+			LimitsDataAssetPropertyDelegateHandle =
+				RuntimeNode->LimitsDataAsset->OnLimitsChanged.AddRaw(
+					this, &FKawaiiPhysicsExtensionEditMode::OnLimitDataAssetPropertyChange);
 		}
 	}
 }

@@ -14,7 +14,7 @@ struct FCollisionLimitDataCustomVersion
 	enum Type
 	{
 		// FNameからFBoneReferenceに移行
-		ChangeToBoneReference = 0,
+		ChangeToBoneReference = 1,
 		DeprecateLimitData,
 
 		// ------------------------------------------------------
@@ -112,6 +112,10 @@ void UKawaiiPhysicsLimitsDataAsset::PostEditChangeChainProperty(FPropertyChanged
 	auto UpdateLimits = [&](auto& Limits)
 	{
 		int32 ArrayIndex = PropertyChangedEvent.GetArrayIndex(ArrayPropertyName.ToString());
+		if (ArrayIndex < 0 || ArrayIndex >= Limits.Num())
+		{
+			return;
+		}
 
 		if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd ||
 			PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet)

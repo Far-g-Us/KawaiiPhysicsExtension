@@ -108,8 +108,12 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 	if (bEnableBudgetAllocator && BudgetMicroSeconds > 0.0f)
 	{
 		const double StartTime = FPlatformTime::Microseconds();
-		// Simple budget check: if we've already used too much time this frame, skip
-		// In production, this would integrate with Animation Budget Allocator subsystem
+		const double ElapsedMicroSeconds = StartTime - LastFrameEndTime;
+		if (ElapsedMicroSeconds > BudgetMicroSeconds && LastFrameEndTime > 0)
+		{
+			bBudgetSkippedLastFrame = true;
+			return;
+		}
 		bBudgetSkippedLastFrame = false;
 	}
 
@@ -153,7 +157,8 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 			continue;
 		}
 
-		if (Bone.BoneRef.BoneIndex < 0 && !Bone.bDummy)
+		// Use INDEX_NONE (which equals -1) for consistent bone index validation
+		if (Bone.BoneRef.BoneIndex == INDEX_NONE && !Bone.bDummy)
 		{
 			Bone.bSkipSimulate = true;
 			continue;
@@ -230,6 +235,11 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 	const UWorld* World = SkelComp ? SkelComp->GetWorld() : nullptr;
 	const FSceneInterface* Scene = World ? World->Scene : nullptr;
 
+	if (!SkelComp)
+	{
+		UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT("SimulateModifyBones: SkelComp is null — world collision disabled"));
+	}
+
 	// 現フレームのポーズ目標をスナップショット（サブステップ中 PoseLocation を補間で上書きするため退避）。
 	// 初回/リセット後は前フレーム値を現在値で初期化（補間で飛ばないように）。
 	// Snapshot this frame's pose target (PoseLocation is overwritten by interpolation during substeps).
@@ -261,7 +271,7 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 		// spiral of death 防止：超過分は破棄 / clamp to avoid spiral of death (drop excess time)
 		SubstepAccumulator = FMath::Min(SubstepAccumulator, MaxSubstepsCached * FixedDt);
 		const int32 NumSteps = FMath::FloorToInt(SubstepAccumulator / FixedDt);
-		SubstepAccumulator -= NumSteps * FixedDt;
+		SubstepAccumulator = FMath::Fmod(SubstepAccumulator, FixedDt);
 
 		// world移動を各サブステップへ分配（並進=線形分配、回転=増分割合のSlerp）。§7-D
 		// Distribute world movement across substeps (translation linear, rotation incremental fraction).
@@ -323,7 +333,11 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 	// root bones follow the (interpolated) pose. Moved out of the skip loop so it runs every substep.
 	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
 	{
-		if (Bone.ParentIndex < 0 && !Bone.bBridgeDummy && !(Bone.BoneRef.BoneIndex < 0 && !Bone.bDummy))
+		// Root bone (ParentIndex < 0) that is not a bridge dummy and has a valid bone index or is a dummy
+		// Simplify: !(BoneRef.BoneIndex < 0 && !Bone.bDummy) == (BoneRef.BoneIndex >= 0 || Bone.bDummy)
+		const bool bIsRootBone = Bone.ParentIndex < 0;
+		const bool bIsValidRoot = bIsRootBone && !Bone.bBridgeDummy && (Bone.BoneRef.BoneIndex >= 0 || Bone.bDummy);
+		if (bIsValidRoot)
 		{
 			Bone.PrevPrevLocation = Bone.PrevLocation;
 			Bone.PrevLocation = Bone.Location;
@@ -734,24 +748,35 @@ void FAnimNode_KawaiiPhysics::ApplyVolumePreservation()
 
 		float FinalScale = Scale * PressureScale;
 
-		// Scale bone positions relative to root
+		// Scale bone positions relative to root - traverse all children, not just first child
 		FVector RootLocation = Bone.Location;
 		CurrentIdx = i;
-		while (ModifyBones.IsValidIndex(CurrentIdx))
+		TArray<int32> Queue;
+		Queue.Add(i);
+		while (Queue.Num() > 0)
 		{
-			FKawaiiPhysicsModifyBone& Cur = ModifyBones[CurrentIdx];
+			const int32 ProcessIdx = Queue[0];
+			Queue.RemoveAt(0);
+
+			if (!ModifyBones.IsValidIndex(ProcessIdx))
+			{
+				continue;
+			}
+
+			FKawaiiPhysicsModifyBone& Cur = ModifyBones[ProcessIdx];
 			if (Cur.ParentIndex >= 0 && ModifyBones.IsValidIndex(Cur.ParentIndex))
 			{
 				FVector Offset = Cur.Location - RootLocation;
 				Cur.Location = RootLocation + Offset * FinalScale;
 			}
-			if (Cur.ChildIndices.Num() > 0)
+
+			// Add all children to the queue
+			for (int32 ChildIdx : Cur.ChildIndices)
 			{
-				CurrentIdx = Cur.ChildIndices[0];
-			}
-			else
-			{
-				break;
+				if (ModifyBones.IsValidIndex(ChildIdx))
+				{
+					Queue.Add(ChildIdx);
+				}
 			}
 		}
 	}
@@ -1287,6 +1312,36 @@ void FAnimNode_KawaiiPhysics::ApplyClothConstraints()
 			}
 		}
 
+		// Stretch constraint - guard against zero distance to prevent NaN
+		if (Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
+		{
+			const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
+			const float CurrentDist = (Bone.Location - ParentBone.Location).Size();
+			const float PoseDist = (Bone.PoseLocation - ParentBone.PoseLocation).Size();
+
+			// Guard against zero/negative distances to prevent NaN
+			if (PoseDist > KINDA_SMALL_NUMBER && CurrentDist > KINDA_SMALL_NUMBER)
+			{
+				const float StretchRatio = CurrentDist / PoseDist;
+
+				// Stretch limit
+				if (StretchRatio > Settings.StretchLimit)
+				{
+					const float TargetDist = PoseDist * Settings.StretchLimit;
+					const FVector Dir = (Bone.Location - ParentBone.Location).GetSafeNormal();
+					Bone.Location = ParentBone.Location + Dir * TargetDist;
+				}
+
+				// Compress limit
+				if (StretchRatio < Settings.CompressLimit)
+				{
+					const float TargetDist = PoseDist * Settings.CompressLimit;
+					const FVector Dir = (Bone.Location - ParentBone.Location).GetSafeNormal();
+					Bone.Location = ParentBone.Location + Dir * TargetDist;
+				}
+			}
+		}
+
 		// Stretch constraint
 		if (Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
 		{
@@ -1367,6 +1422,12 @@ void FAnimNode_KawaiiPhysics::ApplyRagdollBlend()
 
 		// Smooth blend toward target weight
 		const float BlendAlpha = FMath::FInterpConstantTo(0.0f, ClampedWeight, StepDt, ClampedSpeed);
+
+		// Initialize rotation from pose if not yet set (prevents NaN from uninitialized Slerp)
+		if (Bone.Rotation.IsIdentity())
+		{
+			Bone.Rotation = Bone.PoseRotation;
+		}
 
 		// Position blend
 		Bone.Location = FMath::Lerp(Bone.Location, Bone.PoseLocation, BlendAlpha);
@@ -1565,7 +1626,7 @@ void FAnimNode_KawaiiPhysics::ApplyWeaponPhysics()
 
 		// Apply pendulum physics (simplified spring-damper)
 		const FVector Velocity = Bone.Location - Bone.PrevLocation;
-		const FVector Gravity = FVector(0, 0, -980.0f) * GetStepDeltaTime();
+		const FVector Gravity = GravityInSimSpace * GetStepDeltaTime();
 
 		// Pendulum restoring force (pull toward rest pose)
 		const FVector RestOffset = Bone.PoseLocation - Bone.Location;
@@ -1919,7 +1980,7 @@ void FAnimNode_KawaiiPhysics::ApplyWorldMoveFollowNonBaseBone(FKawaiiPhysicsModi
 		}
 
 		// Predictive physics: apply predicted movement to reduce latency
-		const FVector PredictedMove = SkelCompMoveVector + SkelCompMoveVector * PredictionScale;
+		const FVector PredictedMove = SkelCompMoveVector * PredictionScale;
 
 		// Follow Translation
 		const float EffectiveLocationDamping = FMath::Clamp(
@@ -1973,7 +2034,17 @@ FVector FAnimNode_KawaiiPhysics::GetWindVelocity(FComponentSpacePoseContext& Out
 	FVector WindVelocity = WindDirection * WindSpeed * WindScale;
 
 	// TODO:Migrate if there are more good method (Currently copying AnimDynamics implementation)
-	WindVelocity *= FMath::FRandRange(0.0f, 2.0f);
+	// Use deterministic noise when in deterministic mode
+	if (bDeterministicMode)
+	{
+		// Simple hash-based noise from frame count for deterministic mode
+		const float NoisePhase = (float)(FrameCount % 1000) * 0.001f;
+		WindVelocity *= (1.0f + FMath::Sin(NoisePhase * 6.28318f) * 0.5f);
+	}
+	else
+	{
+		WindVelocity *= FMath::FRandRange(0.0f, 2.0f);
+	}
 
 	return WindVelocity;
 }
@@ -2007,8 +2078,18 @@ void FAnimNode_KawaiiPhysics::WarmUp(FComponentSpacePoseContext& Output, const F
 		DeltaTime = SavedDeltaTime;
 		SubstepAccumulator = SavedAccumulator;
 	}
+
+	// Track end time for budget allocator
+	if (bEnableBudgetAllocator)
+	{
+		LastFrameEndTime = FPlatformTime::Microseconds();
+	}
 }
 
+// Convert simulated bone positions back to component space and write to OutBoneTransforms.
+// For single-child bones, preserves bone length by projecting simulated position onto the
+// original pose direction from parent. This prevents chain collapse when damping/stiffness
+// are aggressive.
 void FAnimNode_KawaiiPhysics::ApplySimulateResult(FComponentSpacePoseContext& Output,
                                                   const FBoneContainer& BoneContainer,
                                                   TArray<FBoneTransform>& OutBoneTransforms)

@@ -597,6 +597,9 @@ void FAnimNode_KawaiiPhysics::UpdateSkelCompMove(FComponentSpacePoseContext& Out
 		TeleportType = ETeleportType::TeleportPhysics;
 	}
 
+	// Reset prediction scale each frame before auto-prediction boost
+	PredictionScale = 1.0f;
+
 	// Auto-prediction boost for Motion Warping / large movements
 	if (bAutoPredictionOnLargeMovement && TeleportType != ETeleportType::TeleportPhysics)
 	{

@@ -472,7 +472,12 @@ void UAnimGraphNode_KawaiiPhysics::Serialize(FArchive& Ar)
 void UAnimGraphNode_KawaiiPhysics::CreateExportDataAssetPath(FString& PackageName, const FString& DefaultSuffix) const
 {
 	FString AssetName;
-	const FString AnimBlueprintPath = GetAnimBlueprint()->GetPackage()->GetName();
+	const UBlueprint* Blueprint = GetAnimBlueprint();
+	if (!Blueprint)
+	{
+		return;
+	}
+	const FString AnimBlueprintPath = Blueprint->GetPackage()->GetName();
 	const FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
 	AssetToolsModule.Get().CreateUniqueAssetName(AnimBlueprintPath, DefaultSuffix, PackageName, AssetName);
 }
@@ -512,7 +517,10 @@ void UAnimGraphNode_KawaiiPhysics::ShowExportAssetNotification(UObject* NewAsset
 
 	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(
 		NotificationInfo);
-	NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+	if (NotificationItem.IsValid())
+	{
+		NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+	}
 }
 
 void UAnimGraphNode_KawaiiPhysics::ExportLimitsDataAsset()

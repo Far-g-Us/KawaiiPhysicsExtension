@@ -98,7 +98,9 @@ void UKawaiiPhysicsGPUCompute::TickGPU(
 
 		// Verlet integration
 		const FVector Velocity = (Location - PrevLocation) * (1.0f - Damping);
-		FVector NewLocation = Location + Velocity;
+		FVector NewLocation = Location + Velocity * DeltaTime;
+
+		// NOTE: Gravity not applied in GPU fallback — TickGPU lacks GravityInSimSpace parameter.
 
 		// Stiffness: pull towards pose
 		const FVector PullDir = PoseLocation - NewLocation;
@@ -107,6 +109,12 @@ void UKawaiiPhysicsGPUCompute::TickGPU(
 		// World damping with prediction
 		const FVector PredictedMove = SkelCompMoveVector * (1.0f + PredMove);
 		NewLocation += PredictedMove * (1.0f - WorldDampingLoc);
+
+		// Apply rotation if provided
+		if (!SkelCompMoveRotation.IsIdentity())
+		{
+			NewLocation = SkelCompMoveRotation.RotateVector(NewLocation - PoseLocation) + PoseLocation;
+		}
 
 		// Store results
 		PrevLocation = Location;

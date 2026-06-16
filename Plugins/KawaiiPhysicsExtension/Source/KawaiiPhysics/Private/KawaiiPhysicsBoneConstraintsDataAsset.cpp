@@ -17,7 +17,7 @@ struct FBoneConstraintDataCustomVersion
 	enum Type
 	{
 		// FNameからFBoneReferenceに移行
-		ChangeToBoneReference = 0,
+		ChangeToBoneReference = 1,
 
 		// ------------------------------------------------------
 		VersionPlusOne,

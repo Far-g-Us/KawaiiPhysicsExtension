@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.21.0 Preview",
+	"VersionName": "1.31.1",
 	"FriendlyName": "KawaiiPhysicsExtension",
 	"Description": "Simple Bone Physics for UnrealEngine4 & 5",
 	"Category": "Animation",

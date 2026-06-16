@@ -13,12 +13,14 @@ void FKawaiiPhysicsExtensionEdModule::StartupModule()
 	FEditorModeRegistry::Get().RegisterMode<FKawaiiPhysicsEditMode>("AnimGraph.SkeletalControl.KawaiiPhysicsExtension",
 	                                                                LOCTEXT("FKawaiiPhysicsExtensionEditMode", "Kawaii Physics"),
 	                                                                FSlateIcon(), false);
+	UE_LOG(LogKawaiiPhysicsExtension, Log, TEXT("KawaiiPhysicsExtensionEd module started"));
 }
 
 
 void FKawaiiPhysicsExtensionEdModule::ShutdownModule()
 {
 	FEditorModeRegistry::Get().UnregisterMode("AnimGraph.SkeletalControl.KawaiiPhysicsExtension");
+	UE_LOG(LogKawaiiPhysicsExtension, Log, TEXT("KawaiiPhysicsExtensionEd module shutdown"));
 }
 
 #undef LOCTEXT_NAMESPACE

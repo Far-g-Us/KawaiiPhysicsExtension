@@ -1008,15 +1008,15 @@ public:
 				{
 					for (FSphericalLimit& Sphere : InKawaiiPhysics.SphericalLimits)
 					{
-						if (!Sphere.BoneName.IsNone())
+						if (!Sphere.DrivingBone.BoneName.IsNone())
 						{
-							const int32 BoneIndex = RefSkeleton.FindBoneIndex(Sphere.BoneName);
+							const int32 BoneIndex = RefSkeleton.FindBoneIndex(Sphere.DrivingBone.BoneName);
 							if (BoneIndex >= 0)
 							{
 								// Get bone bounds
 								FBox BoneBounds = RefSkeleton.GetRefBonePose()[BoneIndex].GetTranslationAndScale().GetBox();
 								const float Radius = (BoneBounds.GetExtent() + Padding).GetMax();
-								Sphere.LimitRadius = FMath::Max(Radius, 1.0f);
+								Sphere.Radius = FMath::Max(Radius, 1.0f);
 							}
 						}
 					}
@@ -1027,9 +1027,9 @@ public:
 				{
 					for (FCapsuleLimit& Capsule : InKawaiiPhysics.CapsuleLimits)
 					{
-						if (!Capsule.BoneName.IsNone())
+						if (!Capsule.DrivingBone.BoneName.IsNone())
 						{
-							const int32 BoneIndex = RefSkeleton.FindBoneIndex(Capsule.BoneName);
+							const int32 BoneIndex = RefSkeleton.FindBoneIndex(Capsule.DrivingBone.BoneName);
 							if (BoneIndex >= 0)
 							{
 								// Get bone bounds and child bone for capsule length
@@ -1045,11 +1045,11 @@ public:
 									const FVector BonePos = RefSkeleton.GetRefBonePose()[BoneIndex].GetLocation();
 									const FVector ChildPos = RefSkeleton.GetRefBonePose()[BoneIndex + 1].GetLocation();
 									const float BoneLength = FVector::Dist(BonePos, ChildPos);
-									Capsule.HalfHeight = FMath::Max(BoneLength * 0.5f + Padding, Capsule.Radius);
+									Capsule.Length = FMath::Max(BoneLength * 0.5f + Padding, Capsule.Radius);
 								}
 								else
 								{
-									Capsule.HalfHeight = FMath::Max(Extent.Z + Padding, Capsule.Radius);
+									Capsule.Length = FMath::Max(Extent.Z + Padding, Capsule.Radius);
 								}
 							}
 						}

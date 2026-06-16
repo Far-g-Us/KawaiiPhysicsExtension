@@ -88,15 +88,16 @@ TSharedPtr<FKawaiiPhysicsSharedCollisionSourceSlot> FKawaiiPhysicsSharedCollisio
 	check(IsInGameThread());
 	SCOPE_CYCLE_COUNTER(STAT_KawaiiPhysics_SharedCollision_GetOrCreateSlot);
 
-	// Findは読み取りのみ — ロック不要（GameThread専用、AnimThreadとは読み取り同士で競合しない）
-	// Find is read-only — no lock needed (GameThread only, no conflict with AnimThread reads)
+	// Use write lock from the start to avoid race condition between Find and Add.
+	// Even though this is GameThread-only, the check-then-act pattern without lock
+	// is unsafe (could have reentrancy issues or be problematic if assumptions change).
+	FWriteScopeLock WriteLock(SlotsLock);
+
 	if (TSharedPtr<FKawaiiPhysicsSharedCollisionSourceSlot>* Existing = Slots.Find(SourceID))
 	{
 		return *Existing;
 	}
 
-	// Addは構造変更 — 書き込みロック必要 / Add mutates the TMap — write lock required
-	FWriteScopeLock WriteLock(SlotsLock);
 	TSharedPtr<FKawaiiPhysicsSharedCollisionSourceSlot> NewSlot = MakeShared<FKawaiiPhysicsSharedCollisionSourceSlot>();
 	Slots.Add(SourceID, NewSlot);
 	return NewSlot;

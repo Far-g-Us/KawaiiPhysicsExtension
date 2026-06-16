@@ -314,6 +314,9 @@ void FAnimNode_KawaiiPhysics::UpdatePlanerLimits(TArray<FPlanarLimit>& Limits, F
 	}
 }
 
+// World collision: sweep bone sphere from PrevLocation to Location against scene geometry.
+// Uses sweep test (not overlap) to catch fast-moving bones that might tunnel through walls.
+// Returns true if collision occurred and bone position was adjusted.
 void FAnimNode_KawaiiPhysics::AdjustByWorldCollision(FComponentSpacePoseContext& Output, FKawaiiPhysicsModifyBone& Bone,
                                                      const USkeletalMeshComponent* OwningComp)
 {
@@ -465,6 +468,9 @@ void FAnimNode_KawaiiPhysics::AdjustByWorldCollision(FComponentSpacePoseContext&
 	}
 }
 
+// Sphere collision: push bone out of (Outer) or into (Inner) spherical limits.
+// Outer: bone must stay outside the sphere (push out if penetrated)
+// Inner: bone must stay inside the sphere (pull in if escaped)
 void FAnimNode_KawaiiPhysics::AdjustBySphereCollision(FKawaiiPhysicsModifyBone& Bone, TArray<FSphericalLimit>& Limits)
 {
 	for (auto& Sphere : Limits)
@@ -514,11 +520,13 @@ void FAnimNode_KawaiiPhysics::AdjustBySphereCollision(FKawaiiPhysicsModifyBone& 
 	}
 }
 
+// Capsule collision: push bone out of capsule volume.
+// Finds closest point on capsule segment to bone center, pushes outward by (bone radius + capsule radius).
 void FAnimNode_KawaiiPhysics::AdjustByCapsuleCollision(FKawaiiPhysicsModifyBone& Bone, TArray<FCapsuleLimit>& Limits)
 {
 	for (auto& Capsule : Limits)
 	{
-		if (!Capsule.bEnable || Capsule.Radius <= 0 || Capsule.Length <= 0)
+		if (!Capsule.bEnable || Capsule.Radius <= 0.0f || Capsule.Length <= 0.0f)
 		{
 			continue;
 		}
@@ -531,13 +539,25 @@ void FAnimNode_KawaiiPhysics::AdjustByCapsuleCollision(FKawaiiPhysicsModifyBone&
 		if (DistSquared < LimitDistance * LimitDistance)
 		{
 			FVector ClosestPoint = FMath::ClosestPointOnSegment(Bone.Location, StartPoint, EndPoint);
-			const FVector CollisionNormal = (Bone.Location - ClosestPoint).GetSafeNormal();
+			FVector CollisionNormal = (Bone.Location - ClosestPoint);
+			// If bone is on the capsule axis, use a perpendicular direction
+			if (CollisionNormal.IsNearlyZero())
+			{
+				CollisionNormal = Capsule.Rotation.GetAxisX();
+			}
+			else
+			{
+				CollisionNormal = CollisionNormal.GetSafeNormal();
+			}
 			Bone.Location = ClosestPoint + CollisionNormal * LimitDistance;
 			RecordBoneCollisionEvent(Bone.BoneRef.BoneName, Bone.Location, CollisionNormal);
 		}
 	}
 }
 
+// Box collision: push bone sphere out of box volume.
+// Transforms bone position to box local space, finds closest point on box surface,
+// pushes outward along the shortest penetration axis.
 void FAnimNode_KawaiiPhysics::AdjustByBoxCollision(FKawaiiPhysicsModifyBone& Bone, TArray<FBoxLimit>& Limits)
 {
 	for (auto& Box : Limits)
@@ -583,6 +603,8 @@ void FAnimNode_KawaiiPhysics::AdjustByBoxCollision(FKawaiiPhysicsModifyBone& Bon
 	}
 }
 
+// Planar collision: push bone to the positive side of a plane.
+// Used as a floor/ceiling/wall constraint. Bone radius is added to the plane offset.
 void FAnimNode_KawaiiPhysics::AdjustByPlanerCollision(FKawaiiPhysicsModifyBone& Bone, TArray<FPlanarLimit>& Limits)
 {
 	for (auto& Planar : Limits)
@@ -604,6 +626,11 @@ void FAnimNode_KawaiiPhysics::AdjustByPlanerCollision(FKawaiiPhysicsModifyBone& 
 	}
 }
 
+// Angle limit: decompose bone rotation into twist and swing components relative to parent,
+// then clamp each component to its configured limit. Uses quaternion decomposition:
+//   twist = projection of rotation axis onto parent forward direction
+//   swing = perpendicular component
+// If any component exceeds its limit, the rotation is rebuilt with clamped angles.
 void FAnimNode_KawaiiPhysics::AdjustByAngleLimit(
 	FKawaiiPhysicsModifyBone& Bone,
 	const FKawaiiPhysicsModifyBone& ParentBone)
@@ -666,9 +693,9 @@ void FAnimNode_KawaiiPhysics::AdjustByAngleLimit(
 		}
 
 		// Decompose into twist (along forward) and swing (perpendicular)
-		const float TwistComponent = FVector::DotProduct(Axis, Forward);
+		const float TwistComponent = FMath::Clamp(FVector::DotProduct(Axis, Forward), -1.0f, 1.0f);
 		const float TwistAngle = FMath::Abs(Angle * TwistComponent);
-		const float SwingAngle = FMath::Abs(Angle * FMath::Sqrt(1.0f - TwistComponent * TwistComponent));
+		const float SwingAngle = FMath::Abs(Angle * FMath::Sqrt(FMath::Max(0.0f, 1.0f - TwistComponent * TwistComponent)));
 
 		// Project swing into Y and Z components
 		const FVector SwingAxis = (Axis - Forward * TwistComponent).GetSafeNormal();
@@ -780,6 +807,10 @@ const TArray<float> XPBDComplianceValues =
 	0.0001f, // 1.0  x 10^(-3) (M^2/N) Fat
 };
 
+// XPBD bone constraints: solve distance constraints between pairs of bones.
+// Uses Extended Position-Based Dynamics (XPBD) with compliance-based stiffness.
+// Compliance values are material-dependent (Concrete < Wood < Leather < Rubber < Muscle < Fat).
+// Two passes: before collision (stabilize structure) and after collision (restore distances).
 void FAnimNode_KawaiiPhysics::AdjustByBoneConstraints()
 {
 	SCOPE_CYCLE_COUNTER(STAT_KawaiiPhysics_AdjustByBoneConstraint);
@@ -803,7 +834,7 @@ void FAnimNode_KawaiiPhysics::AdjustByBoneConstraints()
 
 		FVector Delta = ModifyBone2.Location - ModifyBone1.Location;
 		float DeltaLength = Delta.Size();
-		if (DeltaLength <= 0.0f)
+		if (DeltaLength < KINDA_SMALL_NUMBER)
 		{
 			continue;
 		}
@@ -1231,11 +1262,11 @@ void FAnimNode_KawaiiPhysics::UpdateSharedCollisionLimits(
 	ConvertAndStore(SharedCollisionMergedData.PlanarLimits,    SharedPlanarLimits,     RecomputePlane);
 }
 
-// Mesh-based collision using Chaos Physics (GJK/EPA)
 // Mesh-based collision using simplified convex hull approach.
-// For each bone: find closest point on hull, compute face normal, push out if inside.
+// For each bone: compute centroid-to-vertex face normals, check if bone is inside hull,
+// push out along the nearest face normal if inside. Uses bounding box corners as hull vertices.
 // This is NOT a triangle mesh sweep — it uses pre-computed convex hull vertices
-// and checks against each edge's plane. Performance: O(n * h) where n = bones, h = hull vertices.
+// and checks against each face plane. Performance: O(n * h) where n = bones, h = hull vertices.
 void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bone,
                                                      TArray<FKawaiiPhysicsMeshCollision>& Collisions,
                                                      FComponentSpacePoseContext& Output)
@@ -1302,7 +1333,7 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 
 					// Use bounding box corners as simplified convex hull
 					const FVector Center = Bounds.GetCenter();
-					const FVector Extent = Bounds.GetExtent() * 0.5f;
+					const FVector Extent = Bounds.GetExtent();
 
 					HullVertices.Add(Center + FVector(Extent.X, Extent.Y, Extent.Z));
 					HullVertices.Add(Center + FVector(Extent.X, Extent.Y, -Extent.Z));
@@ -1372,77 +1403,55 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 			Centroid /= HullVertices.Num();
 		}
 
-		// Check against each face of the convex hull
-		// For a convex hull boundary, use the centroid-to-vertex direction as face normal
+		// Check against each face of the simplified convex hull
+		// Use centroid-to-vertex direction as face normals (each vertex is a "corner face" of the hull)
 		for (int32 i = 0; i < HullVertices.Num() && bInsideHull; ++i)
 		{
-			const FVector& A = HullVertices[i];
-			const FVector& B = HullVertices[(i + 1) % HullVertices.Num()];
-
-			// Face normal: outward direction from centroid projected onto the edge plane
-			const FVector EdgeDir = (B - A).GetSafeNormal();
-			const FVector ToBone = Bone.Location - A;
-			const FVector FaceNormal = FVector::CrossProduct(EdgeDir,
-				FVector::CrossProduct(ToBone, EdgeDir).GetSafeNormal()).GetSafeNormal();
-
+			const FVector FaceNormal = (HullVertices[i] - Centroid).GetSafeNormal();
 			if (FaceNormal.IsNearlyZero())
 			{
 				continue;
 			}
 
-			const float DistToPlane = FVector::DotProduct(Bone.Location - A, FaceNormal);
-			if (DistToPlane > BoneRadius)
+			// Signed distance from the plane passing through hull center along this normal
+			const float DistToPlane = FVector::DotProduct(Bone.Location - Centroid, FaceNormal);
+
+			// If bone is beyond the face plane by more than its radius, it's outside
+			if (DistToPlane > -BoneRadius)
 			{
 				bInsideHull = false;
-			}
-			else if (DistToPlane < 0)
-			{
-				// Bone is outside this face
-				bInsideHull = false;
-				// Push bone outside if within radius
-				if (FMath::Abs(DistToPlane) < BoneRadius)
-				{
-					Bone.Location += FaceNormal * (BoneRadius - DistToPlane);
-					CollisionNormal = FaceNormal;
-				}
 			}
 		}
 
 		// If bone is inside hull, push to nearest face
 		if (bInsideHull)
 		{
-			// Find the face that the bone is closest to and push out
-			float MaxPushDist = 0;
+			float MinPushDist = MAX_FLT;
 			FVector BestNormal = FVector::ZeroVector;
 
 			for (int32 i = 0; i < HullVertices.Num(); ++i)
 			{
-				const FVector& A = HullVertices[i];
-				const FVector& B = HullVertices[(i + 1) % HullVertices.Num()];
-
-				const FVector EdgeDir = (B - A).GetSafeNormal();
-				const FVector ToBone = Bone.Location - A;
-				const FVector FaceNormal = FVector::CrossProduct(EdgeDir,
-					FVector::CrossProduct(ToBone, EdgeDir).GetSafeNormal()).GetSafeNormal();
-
+				const FVector FaceNormal = (HullVertices[i] - Centroid).GetSafeNormal();
 				if (FaceNormal.IsNearlyZero())
 				{
 					continue;
 				}
 
-				const float DistToPlane = FVector::DotProduct(Bone.Location - A, FaceNormal);
-				const float PushDist = BoneRadius - DistToPlane;
+				// Distance from bone to the face plane (negative = inside)
+				const float DistToPlane = FVector::DotProduct(Bone.Location - Centroid, FaceNormal);
+				// Push distance needed: move bone to the face plane + BoneRadius outside
+				const float PushDist = BoneRadius + DistToPlane;
 
-				if (PushDist > MaxPushDist)
+				if (PushDist < MinPushDist)
 				{
-					MaxPushDist = PushDist;
+					MinPushDist = PushDist;
 					BestNormal = FaceNormal;
 				}
 			}
 
-			if (!BestNormal.IsNearlyZero())
+			if (!BestNormal.IsNearlyZero() && MinPushDist > 0)
 			{
-				Bone.Location += BestNormal * MaxPushDist;
+				Bone.Location += BestNormal * MinPushDist;
 				CollisionNormal = BestNormal;
 			}
 		}
