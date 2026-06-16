@@ -22,6 +22,11 @@ public:
 	 *
 	 * @param AnimDynamics Settings to convert
 	 * @return Equivalent KawaiiPhysics settings
+	 *
+	 * NOTE: Tested with UE 5.3-5.5 AnimNode_AnimDynamics.
+	 * Some parameters have no direct equivalent and are documented as warnings.
+	 * AnimDynamics per-axis constraints (LinearX/Y/Z, AngularX/Y/Z) are NOT
+	 * supported — KawaiiPhysics uses Twist/Swing decomposition instead.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Migration")
 	static FKawaiiPhysicsSettings ConvertFromAnimDynamics(const FAnimNode_AnimDynamics& AnimDynamics)
@@ -44,12 +49,20 @@ public:
 		Settings.WorldDampingLocation = FMath::Clamp(1.0f - AnimDynamics.WorldDampingTranslation, 0.0f, 1.0f);
 		Settings.WorldDampingRotation = FMath::Clamp(1.0f - AnimDynamics.WorldDampingRotation, 0.0f, 1.0f);
 
-		// Gravity Scale
-		if (AnimDynamics.bApplyGravity)
-		{
-			// Store gravity in a way that can be reconstructed
-			Settings.Stiffness = FMath::Max(Settings.Stiffness - 0.01f, 0.0f);
-		}
+		// Gravity Scale: AnimDynamics has bApplyGravity, KawaiiPhysics uses Gravity vector
+		// NOTE: AnimDynamics gravity is per-bone scale, KawaiiPhysics uses global Gravity vector
+		// User must manually set Gravity in KawaiiPhysics if AnimDynamics had gravity enabled
+
+		// Per-axis constraints: AnimDynamics has LinearX/Y/Z and AngularX/Y/Z
+		// KawaiiPhysics uses Twist/Swing decomposition instead
+		// If AnimDynamics had asymmetric constraints, user must manually configure Twist/Swing
+
+		// Snap to reference pose: AnimDynamics has SnapPosition/SnapRotation
+		// KawaiiPhysics has no direct equivalent — use Damping/Stiffness to control return-to-pose
+
+		// BoundBone: AnimDynamics can bind simulation to another bone
+		// KawaiiPhysics uses SimulationBaseBone for similar purpose
+		// User must manually set SimulationBaseBone if AnimDynamics had BoundBone
 
 		return Settings;
 	}

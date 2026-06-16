@@ -473,9 +473,39 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsSavedState
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|SavedState")
 	TMap<FName, FVector> BonePrevLocations;
 
+	/** Previous rotations for angular velocity continuity */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|SavedState")
+	TMap<FName, FQuat> BonePrevRotations;
+
+	/** Pose locations for constraint/length restoration */
+	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|SavedState")
+	TMap<FName, FVector> BonePoseLocations;
+
 	/** Whether this state is valid */
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|SavedState")
 	bool bIsValid = false;
+};
+
+/**
+ * Morph target influence on physics parameters.
+ * At morph weight=1.0, multipliers are fully applied.
+ */
+USTRUCT(BlueprintType)
+struct KAWAIIPHYSICS_API FMorphTargetPhysicsInfluence
+{
+	GENERATED_BODY()
+
+	/** Damping multiplier when morph weight = 1.0 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MorphTarget")
+	float DampingMultiplier = 1.0f;
+
+	/** Stiffness multiplier when morph weight = 1.0 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MorphTarget")
+	float StiffnessMultiplier = 1.0f;
+
+	/** LimitAngle multiplier when morph weight = 1.0 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MorphTarget")
+	float LimitAngleMultiplier = 1.0f;
 };
 
 /**

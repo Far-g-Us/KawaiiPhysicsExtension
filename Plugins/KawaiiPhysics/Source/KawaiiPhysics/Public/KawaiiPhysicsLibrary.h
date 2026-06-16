@@ -1615,6 +1615,8 @@ public:
 					{
 						State.BoneLocations.Add(Bone.BoneRef.BoneName, Bone.Location);
 						State.BonePrevLocations.Add(Bone.BoneRef.BoneName, Bone.PrevLocation);
+						State.BonePrevRotations.Add(Bone.BoneRef.BoneName, Bone.PrevRotation);
+						State.BonePoseLocations.Add(Bone.BoneRef.BoneName, Bone.PoseLocation);
 					}
 				}
 				State.bIsValid = true;
@@ -1644,6 +1646,14 @@ public:
 					if (const FVector* PrevLoc = State.BonePrevLocations.Find(Bone.BoneRef.BoneName))
 					{
 						Bone.PrevLocation = *PrevLoc;
+					}
+					if (const FQuat* PrevRot = State.BonePrevRotations.Find(Bone.BoneRef.BoneName))
+					{
+						Bone.PrevRotation = *PrevRot;
+					}
+					if (const FVector* PoseLoc = State.BonePoseLocations.Find(Bone.BoneRef.BoneName))
+					{
+						Bone.PoseLocation = *PoseLoc;
 					}
 				}
 			});

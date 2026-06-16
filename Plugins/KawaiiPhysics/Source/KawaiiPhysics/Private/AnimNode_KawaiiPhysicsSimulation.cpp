@@ -521,6 +521,9 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 	// Morph Target Driving: drive morph targets based on bone velocity
 	ApplyMorphTargetDriving(Output);
 
+	// Morph Target Physics Influence: morph weight → physics parameters (reverse direction)
+	ApplyMorphTargetPhysicsInfluence(Output);
+
 	// Apply physics material per-bone settings (before pose blending so multipliers apply on top)
 	ApplyPhysicsMaterial();
 
@@ -857,6 +860,60 @@ void FAnimNode_KawaiiPhysics::ApplyMorphTargetDriving(FComponentSpacePoseContext
 				// Apply morph target
 				SkelComp->SetMorphTarget(MorphTargetName, MorphValue);
 				break;
+			}
+		}
+	}
+}
+
+// Apply morph target influence on physics parameters (reverse direction: morph weight → physics)
+void FAnimNode_KawaiiPhysics::ApplyMorphTargetPhysicsInfluence(FComponentSpacePoseContext& Output)
+{
+	if (!bEnableMorphTargetPhysicsInfluence || MorphTargetPhysicsInfluence.Num() == 0)
+	{
+		return;
+	}
+
+	if (!Output.AnimInstanceProxy)
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
+	if (!SkelComp)
+	{
+		return;
+	}
+
+	for (auto& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		// Check each morph target influence mapping
+		for (const auto& Influence : MorphTargetPhysicsInfluence)
+		{
+			const FName& MorphTargetName = Influence.Key;
+			const FMorphTargetPhysicsInfluence& Params = Influence.Value;
+
+			// Get morph target weight from skeletal mesh
+			const float MorphWeight = SkelComp->GetMorphTargetWeight(MorphTargetName);
+
+			if (MorphWeight > KINDA_SMALL_NUMBER)
+			{
+				// Interpolate multipliers based on morph weight
+				const float DampingMult = FMath::Lerp(1.0f, Params.DampingMultiplier, MorphWeight);
+				const float StiffnessMult = FMath::Lerp(1.0f, Params.StiffnessMultiplier, MorphWeight);
+				const float LimitAngleMult = FMath::Lerp(1.0f, Params.LimitAngleMultiplier, MorphWeight);
+
+				// Apply multipliers to physics settings
+				Bone.PhysicsSettings.Damping *= DampingMult;
+				Bone.PhysicsSettings.Stiffness *= StiffnessMult;
+				if (Bone.PhysicsSettings.LimitAngle > 0)
+				{
+					Bone.PhysicsSettings.LimitAngle *= LimitAngleMult;
+				}
 			}
 		}
 	}

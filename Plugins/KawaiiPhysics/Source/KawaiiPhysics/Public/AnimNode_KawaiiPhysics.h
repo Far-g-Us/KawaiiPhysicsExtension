@@ -351,11 +351,12 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 
 	/**
 	* GPUシミュレーションを有効にするフラグ（実験的）。Verlet積分とStiffnessをGPUで実行。
-	* Enable GPU simulation (experimental). Runs Verlet integration and stiffness on GPU.
-	* Collision and bone constraints remain on CPU (hybrid approach).
+	* Enable GPU simulation (EXPERIMENTAL - NOT for production). Runs Verlet integration and stiffness on GPU.
+	* Collision and bone constraints remain on CPU (hybrid approach). Results differ from CPU-only mode.
+	* Auto-disabled below 50 bones (sync overhead exceeds CPU benefit).
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|GPU",
-		meta = (PinHiddenByDefault))
+		meta = (PinHiddenByDefault, DisplayName="Enable GPU Simulation (EXPERIMENTAL)"))
 	bool bEnableGPUSimulation = false;
 
 	// --- Morph Target Driver ---
@@ -389,6 +390,25 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Morph Targets",
 		meta = (ClampMin = "0", EditCondition = "bEnableMorphTargetDriving", PinHiddenByDefault))
 	float MorphTargetSpeedThreshold = 10.0f;
+
+	/**
+	* Enable reverse morph target mapping: morph weight → physics parameters.
+	* Example: fat_morph = 0.8 → automatically increase Jiggle Intensity / Damping.
+	* Useful for characters with different body types via morphs.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Morph Targets",
+		meta = (PinHiddenByDefault))
+	bool bEnableMorphTargetPhysicsInfluence = false;
+
+	/**
+	* Mapping of morph target names to physics parameter influence.
+	* Key = morph target name, Value = { DampingMultiplier, StiffnessMultiplier, LimitAngleMultiplier }.
+	* At morph weight=1.0, multipliers are fully applied. At weight=0, no effect.
+	* If multiple morphs affect the same bone, multipliers are MULTIPLIED (e.g., fat=0.8 * muscle=0.6 = 0.48).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Morph Targets",
+		meta = (EditCondition = "bEnableMorphTargetPhysicsInfluence", PinHiddenByDefault))
+	TMap<FName, FMorphTargetPhysicsInfluence> MorphTargetPhysicsInfluence;
 
 	// --- Pose-Based Physics Blending ---
 
@@ -1653,6 +1673,7 @@ protected:
 	 * @param Output The pose context for accessing skeletal mesh component.
 	 */
 	void ApplyMorphTargetDriving(FComponentSpacePoseContext& Output);
+	void ApplyMorphTargetPhysicsInfluence(FComponentSpacePoseContext& Output);
 
 	/**
 	 * Detect character pose (Standing/Sitting/Lying) based on pelvis/spine orientation.
