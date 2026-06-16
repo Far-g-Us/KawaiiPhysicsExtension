@@ -3,13 +3,13 @@
 	"Version": 1,
 	"VersionName": "1.31.1",
 	"FriendlyName": "KawaiiPhysicsExtension",
-	"Description": "Simple Bone Physics for UnrealEngine4 & 5",
+	"Description": "Extended fork of KawaiiPhysics for UE 5.5 — character-focused bone physics with body, clothing, and weapon simulation",
 	"Category": "Animation",
-	"CreatedBy": "pafuhana1213",
-	"CreatedByURL": "https://twitter.com/pafuhana1213",
-	"DocsURL": "https://github.com/pafuhana1213/KawaiiPhysics",
-	"MarketplaceURL": "com.epicgames.launcher://ue/Fab/product/f870c07e-0a02-4a78-a888-e52a22794572",
-	"SupportURL": "https://github.com/pafuhana1213/KawaiiPhysics/issues",
+	"CreatedBy": "A1ZZM",
+	"CreatedByURL": "",
+	"DocsURL": "https://github.com/Far-g-Us/KawaiiPhysicsExtension",
+	"MarketplaceURL": "",
+	"SupportURL": "https://github.com/Far-g-Us/KawaiiPhysicsExtension/issues",
 	"CanContainContent": false,
 	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
@@ -18,17 +18,14 @@
 		{
 			"Name": "KawaiiPhysicsExtension",
 			"Type": "Runtime",
-			"LoadingPhase": "PostConfigInit",
-			"PlatformDenyList": []
+			"LoadingPhase": "PostConfigInit"
 		},
 		{
 			"Name": "KawaiiPhysicsExtensionEd",
 			"Type": "UncookedOnly",
 			"LoadingPhase": "PreDefault",
 			"PlatformAllowList": [
-				"Win64",
-				"Mac",
-				"Linux"
+				"Win64"
 			]
 		}
 	]
