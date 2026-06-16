@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "AnimNode_KawaiiPhysics.h"
+#include "KawaiiPhysicsLibrary.h"
 #include "KawaiiPhysicsDebugWidget.generated.h"
 
 /**

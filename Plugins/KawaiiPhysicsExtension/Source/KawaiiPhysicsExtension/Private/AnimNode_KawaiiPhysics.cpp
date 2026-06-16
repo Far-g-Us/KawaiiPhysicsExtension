@@ -438,8 +438,8 @@ void FAnimNode_KawaiiPhysics::AnimDrawDebug(FComponentSpacePoseContext& Output)
 					const float Age = FPlatformTime::Seconds() - Event.TimeStamp;
 					if (Age < 2.0f) // Show for 2 seconds
 					{
-						const float Alpha = 1.0f - (Age / 2.0f);
-						const FColor EventColor = FColor(255, 0, 0, FMath::Clamp((int32)(Alpha * 255), 0, 255));
+						const float AnimAlpha = 1.0f - (Age / 2.0f);
+						const FColor EventColor = FColor(255, 0, 0, FMath::Clamp((int32)(AnimAlpha * 255), 0, 255));
 						AnimInstanceProxy->AnimDrawDebugSphere(Event.CollisionPoint, 3.0f, 4, EventColor,
 						                                       false, -1, LineThickness * 2.0f, SDPG_Foreground);
 						AnimInstanceProxy->AnimDrawDebugLine(
@@ -522,11 +522,14 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 
 	check(OutBoneTransforms.Num() == 0);
 
+	// Cache AnimInstanceProxy for library functions
+	AnimInstanceProxyForLib = Output.AnimInstanceProxy;
+
 	// IK Feedback Loop: use PostIKPose if enabled
-	if (bUsePostIKPose && PostIKPose.IsConnected())
+	if (bUsePostIKPose)
 	{
 		FComponentSpacePoseContext PostIKOutput(Output.AnimInstanceProxy);
-		PostIKPose.Evaluate(PostIKOutput);
+		PostIKPose.EvaluateComponentSpace(PostIKOutput);
 		Output.Pose = PostIKOutput.Pose;
 	}
 
@@ -740,17 +743,19 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 		const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
 		if (SkelComp)
 		{
-			const FVector CamLocation = Output.AnimInstanceProxy->GetPlayerViewLocation();
+			// Get camera/view location for distance-based LOD
+			// Use component location as approximation (GetPlayerViewLocation removed in UE 5.5)
+			const FVector CamLocation = SkelComp->GetComponentLocation();
 			const FVector CompLocation = SkelComp->GetComponentLocation();
 			const float Distance = FVector::Dist(CamLocation, CompLocation);
 
 			if (Distance > DistanceLODStart)
 			{
-				const float Alpha = FMath::Clamp(
+				const float DistanceAlpha = FMath::Clamp(
 					(Distance - DistanceLODStart) / FMath::Max(DistanceLODEnd - DistanceLODStart, 1.0f),
 					0.0f, 1.0f);
 
-				CurrentDistanceLODAlpha = Alpha;
+				CurrentDistanceLODAlpha = DistanceAlpha;
 
 				// Save original values before modification (only once per frame)
 				if (!bLODCacheSaved)
@@ -774,32 +779,32 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 					CachedLODLimitAngle[i] = Bone.PhysicsSettings.LimitAngle;
 
 					// Increase damping (more stable, less wobble)
-					Bone.PhysicsSettings.Damping = FMath::Lerp(Bone.PhysicsSettings.Damping, 0.95f, Alpha);
+					Bone.PhysicsSettings.Damping = FMath::Lerp(Bone.PhysicsSettings.Damping, 0.95f, DistanceAlpha);
 					// Increase stiffness (pull towards pose more)
-					Bone.PhysicsSettings.Stiffness = FMath::Lerp(Bone.PhysicsSettings.Stiffness, 0.5f, Alpha);
+					Bone.PhysicsSettings.Stiffness = FMath::Lerp(Bone.PhysicsSettings.Stiffness, 0.5f, DistanceAlpha);
 					// Reduce limit angle
 					if (Bone.PhysicsSettings.LimitAngle > 0)
 					{
-						Bone.PhysicsSettings.LimitAngle *= (1.0f - Alpha * 0.7f);
+						Bone.PhysicsSettings.LimitAngle *= (1.0f - DistanceAlpha * 0.7f);
 					}
 				}
 
 				// Disable world collision at far distances
-				if (Alpha > 0.5f)
+				if (DistanceAlpha > 0.5f)
 				{
 					bAllowWorldCollision = false;
 				}
 
 				// Reduce constraint iterations
-				if (Alpha > 0.3f)
+				if (DistanceAlpha > 0.3f)
 				{
-					const int32 ReducedIterations = FMath::Max(1, (int32)(BoneConstraintIterationCountBeforeCollision * (1.0f - Alpha)));
+					const int32 ReducedIterations = FMath::Max(1, (int32)(BoneConstraintIterationCountBeforeCollision * (1.0f - DistanceAlpha)));
 					BoneConstraintIterationCountBeforeCollision = ReducedIterations;
 					BoneConstraintIterationCountAfterCollision = ReducedIterations;
 				}
 
 				// Force component space at far LOD (cheaper)
-				if (bForceComponentSpaceAtFarLOD && Alpha > 0.8f)
+				if (bForceComponentSpaceAtFarLOD && DistanceAlpha > 0.8f)
 				{
 					SimulationSpace = EKawaiiPhysicsSimulationSpace::ComponentSpace;
 				}
@@ -817,7 +822,7 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 						ModifyBones[i].PhysicsSettings.Stiffness = CachedLODStiffness[i];
 						ModifyBones[i].PhysicsSettings.LimitAngle = CachedLODLimitAngle[i];
 					}
-					bAllowWorldCollision = CachedAllowWorldCollision;
+					bAllowWorldCollision = CachedAllowWorldCollision != 0.0f;
 					BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
 					BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
 					SimulationSpace = CachedSimulationSpace;
@@ -934,7 +939,7 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 			}
 			CurrentDistanceLODAlpha = 0.0f;
 		}
-		bAllowWorldCollision = CachedAllowWorldCollision;
+		bAllowWorldCollision = CachedAllowWorldCollision != 0.0f;
 		BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
 		BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
 		SimulationSpace = CachedSimulationSpace;
@@ -986,7 +991,7 @@ void FAnimNode_KawaiiPhysics::RuntimeDebugDraw(const USkeletalMeshComponent* Ske
 	// Draw bone lines (white = normal, yellow = skipped)
 	for (const FKawaiiPhysicsModifyBone& Bone : ModifyBones)
 	{
-		if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.BoneIndex.IsValid())
+		if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.HasValidSetup())
 		{
 			continue;
 		}
@@ -996,7 +1001,7 @@ void FAnimNode_KawaiiPhysics::RuntimeDebugDraw(const USkeletalMeshComponent* Ske
 		if (Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
 		{
 			const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
-			if (ParentBone.BoneRef.BoneIndex.IsValid())
+			if (ParentBone.BoneRef.HasValidSetup())
 			{
 				const FVector ParentLocation = SkelComp->GetBoneTransform(ParentBone.BoneRef.BoneIndex).GetLocation();
 				const FColor LineColor = Bone.bSkipSimulate ? FColor::Yellow : FColor::White;

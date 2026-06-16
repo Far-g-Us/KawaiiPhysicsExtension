@@ -8,6 +8,20 @@
 #include "KawaiiPhysicsExternalForce_WindZone.generated.h"
 
 /**
+ * Enum for wind zone shapes
+ */
+UENUM(BlueprintType)
+enum class EKawaiiPhysicsWindZoneShape : uint8
+{
+	/** Sphere: radius-based falloff */
+	Sphere,
+	/** Box: axis-aligned box */
+	Box,
+	/** Cone: directional cone from base to tip */
+	Cone
+};
+
+/**
  * Wind Zone: local wind source with shape and falloff.
  * Unlike the global Wind force (which uses WindDirectionalSource),
  * WindZone defines a local area where wind affects bones.
@@ -93,18 +107,4 @@ private:
 
 	/** Get falloff multiplier at normalized distance (0-1) */
 	float GetFalloffMultiplier(float NormalizedDistance) const;
-};
-
-/**
- * Enum for wind zone shapes
- */
-UENUM(BlueprintType)
-enum class EKawaiiPhysicsWindZoneShape : uint8
-{
-	/** Sphere: radius-based falloff */
-	Sphere,
-	/** Box: axis-aligned box */
-	Box,
-	/** Cone: directional cone from base to tip */
-	Cone
 };

@@ -3,6 +3,7 @@
 #include "AnimNode_KawaiiPhysics.h"
 
 #include "AnimationRuntime.h"
+#include "HAL/PlatformTime.h"
 #include "KawaiiPhysicsBoneConstraintsDataAsset.h"
 #include "KawaiiPhysicsCustomExternalForce.h"
 #include "KawaiiPhysicsDeveloperSettings.h"
@@ -107,7 +108,7 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 	// Budget Allocator: skip simulation if budget exceeded
 	if (bEnableBudgetAllocator && BudgetMicroSeconds > 0.0f)
 	{
-		const double StartTime = FPlatformTime::Microseconds();
+		const double StartTime = FPlatformTime::Seconds() * 1000000.0;
 		const double ElapsedMicroSeconds = StartTime - LastFrameEndTime;
 		if (ElapsedMicroSeconds > BudgetMicroSeconds && LastFrameEndTime > 0)
 		{
@@ -923,7 +924,7 @@ void FAnimNode_KawaiiPhysics::ApplyMorphTargetPhysicsInfluence(FComponentSpacePo
 			const FMorphTargetPhysicsInfluence& Params = Influence.Value;
 
 			// Get morph target weight from skeletal mesh
-			const float MorphWeight = SkelComp->GetMorphTargetWeight(MorphTargetName);
+			const float MorphWeight = SkelComp->GetMorphTarget(MorphTargetName);
 
 			if (MorphWeight > KINDA_SMALL_NUMBER)
 			{
@@ -1433,7 +1434,7 @@ void FAnimNode_KawaiiPhysics::ApplyRagdollBlend()
 		Bone.Location = FMath::Lerp(Bone.Location, Bone.PoseLocation, BlendAlpha);
 
 		// Rotation blend (Slerp for smooth quaternion interpolation)
-		if (!Bone.PoseRotation.IsNearlyIdentity())
+		if (!Bone.PoseRotation.IsIdentity(KINDA_SMALL_NUMBER))
 		{
 			Bone.Rotation = FQuat::Slerp(Bone.Rotation, Bone.PoseRotation, BlendAlpha);
 		}
@@ -1626,7 +1627,7 @@ void FAnimNode_KawaiiPhysics::ApplyWeaponPhysics()
 
 		// Apply pendulum physics (simplified spring-damper)
 		const FVector Velocity = Bone.Location - Bone.PrevLocation;
-		const FVector Gravity = GravityInSimSpace * GetStepDeltaTime();
+		const FVector GravityVec = GravityInSimSpace * GetStepDeltaTime();
 
 		// Pendulum restoring force (pull toward rest pose)
 		const FVector RestOffset = Bone.PoseLocation - Bone.Location;
@@ -1636,7 +1637,7 @@ void FAnimNode_KawaiiPhysics::ApplyWeaponPhysics()
 		const FVector DampingForce = -Velocity * WeaponPendulumDamping;
 
 		// Apply forces
-		Bone.Location += (SpringForce + DampingForce + Gravity) * GetStepDeltaTime();
+		Bone.Location += (SpringForce + DampingForce + GravityVec) * GetStepDeltaTime();
 	}
 }
 
@@ -1681,8 +1682,9 @@ void FAnimNode_KawaiiPhysics::AutoGenerateCollisions(const USkeletalMeshComponen
 		return;
 	}
 
-	// Get reference skeleton
+	// Get reference skeleton and skeleton
 	const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
+	const USkeleton* Skeleton = SkeletalMesh->GetSkeleton();
 
 	// Clear existing collisions
 	SphericalLimits.Empty();
@@ -1718,7 +1720,7 @@ void FAnimNode_KawaiiPhysics::AutoGenerateCollisions(const USkeletalMeshComponen
 			{
 				FCapsuleLimit Capsule;
 				Capsule.DrivingBone.BoneName = ChainRoot;
-				Capsule.DrivingBone.Initialize(RefSkeleton);
+				Capsule.DrivingBone.Initialize(Skeleton);
 				Capsule.Location = BoneLocation + BoneDir * 0.5f;
 				Capsule.Rotation = FRotationMatrix::MakeFromZ(BoneDir).ToQuat();
 				Capsule.Radius = FMath::Max(BoneLength * 0.3f, 2.0f);
@@ -1732,7 +1734,7 @@ void FAnimNode_KawaiiPhysics::AutoGenerateCollisions(const USkeletalMeshComponen
 			// Create sphere for leaf bones
 			FSphericalLimit Sphere;
 			Sphere.DrivingBone.BoneName = ChainRoot;
-			Sphere.DrivingBone.Initialize(RefSkeleton);
+			Sphere.DrivingBone.Initialize(Skeleton);
 			Sphere.Location = BoneLocation;
 			Sphere.Radius = 3.0f;
 			Sphere.LimitType = ESphericalLimitType::Outer;
@@ -2082,7 +2084,7 @@ void FAnimNode_KawaiiPhysics::WarmUp(FComponentSpacePoseContext& Output, const F
 	// Track end time for budget allocator
 	if (bEnableBudgetAllocator)
 	{
-		LastFrameEndTime = FPlatformTime::Microseconds();
+		LastFrameEndTime = FPlatformTime::Seconds() * 1000000.0;
 	}
 }
 
@@ -2415,7 +2417,11 @@ int32 FAnimNode_KawaiiPhysics::AutoGenerateGridConstraints(USkeletalMeshComponen
 		// Sort chains by depth (closer to root first)
 		ChainBones[PrefixIdx].Sort([&RefSkeleton](const int32& A, const int32& B)
 		{
-			return RefSkeleton.GetDepth(A) < RefSkeleton.GetDepth(B);
+			// Calculate depth manually (GetDepth may not exist in UE 5.5)
+			int32 DepthA = 0, DepthB = 0;
+			for (int32 Parent = RefSkeleton.GetParentIndex(A); Parent >= 0; Parent = RefSkeleton.GetParentIndex(Parent)) { ++DepthA; }
+			for (int32 Parent = RefSkeleton.GetParentIndex(B); Parent >= 0; Parent = RefSkeleton.GetParentIndex(Parent)) { ++DepthB; }
+			return DepthA < DepthB;
 		});
 	}
 
@@ -2437,8 +2443,8 @@ int32 FAnimNode_KawaiiPhysics::AutoGenerateGridConstraints(USkeletalMeshComponen
 				FModifyBoneConstraint Constraint;
 				Constraint.Bone1.BoneName = RefSkeleton.GetBoneName(BoneIdx1);
 				Constraint.Bone2.BoneName = RefSkeleton.GetBoneName(BoneIdx2);
-				Constraint.Bone1.Initialize(RefSkeleton);
-				Constraint.Bone2.Initialize(RefSkeleton);
+				Constraint.Bone1.Initialize(Skeleton);
+				Constraint.Bone2.Initialize(Skeleton);
 
 				// Check if constraint already exists
 				bool bExists = false;

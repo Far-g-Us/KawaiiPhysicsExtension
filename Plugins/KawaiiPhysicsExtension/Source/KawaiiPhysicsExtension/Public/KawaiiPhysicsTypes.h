@@ -313,6 +313,9 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysicsModifyBone
 	/** Location two frames ago (for acceleration calculation) */
 	FVector PrevPrevLocation = FVector::ZeroVector;
 
+	/** Current simulation rotation (blended in ragdoll mode) */
+	FQuat Rotation = FQuat::Identity;
+
 	/** Previous rotation of the bone */
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")
 	FQuat PrevRotation = FQuat::Identity;

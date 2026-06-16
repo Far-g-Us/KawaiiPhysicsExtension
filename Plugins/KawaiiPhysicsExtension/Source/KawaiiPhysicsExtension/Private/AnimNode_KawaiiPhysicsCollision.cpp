@@ -13,6 +13,8 @@
 #include "Runtime/Launch/Resources/Version.h"
 #include "SceneInterface.h"
 #include "PhysicsEngine/PhysicsAsset.h"
+#include "StaticMeshResources.h"
+#include "Rendering/PositionVertexBuffer.h"
 #include "Engine/World.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 
@@ -1290,7 +1292,7 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 		if (MeshCol.DrivingBone.BoneIndex >= 0)
 		{
 			const FReferenceSkeleton& RefSkeleton = Output.Pose.GetPose().GetBoneContainer().GetReferenceSkeleton();
-			const int32 BoneIndex = MeshCol.DrivingBone.GetCompactPoseIndex(Output.Pose.GetPose().GetBoneContainer());
+			const int32 BoneIndex = MeshCol.DrivingBone.GetCompactPoseIndex(Output.Pose.GetPose().GetBoneContainer()).GetInt();
 			if (BoneIndex >= 0)
 			{
 				const FTransform BoneTransform = Output.Pose.GetComponentSpaceTransform(FCompactPoseBoneIndex(BoneIndex));
@@ -1317,19 +1319,23 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 			const FStaticMeshRenderData* RenderData = MeshCol.CollisionMesh->GetRenderData();
 			if (RenderData && RenderData->LODResources.Num() > 0)
 			{
-				const FStaticMeshLODResource& LODResource = RenderData->LODResources[0];
-				const FStaticMeshVertexBuffer& VertexBuffer = LODResource.VertexBuffers.PositionVertexBuffer;
+				const FStaticMeshLODResources& LODResource = RenderData->LODResources[0];
+				const FPositionVertexBuffer& VertexBuffer = LODResource.VertexBuffers.PositionVertexBuffer;
 				const int32 NumVerts = VertexBuffer.GetNumVertices();
 
 				if (NumVerts > 0)
 				{
-					// Compute bounding box and use corners + center as simplified hull
-					FBox Bounds(EForceInit);
-					for (int32 i = 0; i < NumVerts; ++i)
+					// Compute bounding box from vertex positions
+					FVector FirstPos = FVector(VertexBuffer.VertexPosition(0));
+					FBox Bounds(FirstPos, FirstPos);
+					for (int32 i = 1; i < NumVerts; ++i)
 					{
-						const FVector WorldPos = MeshTransform.TransformPosition(VertexBuffer.VertexPosition(i) * MeshCol.MeshScale);
-						Bounds += WorldPos;
+						FVector VertPosF = FVector(VertexBuffer.VertexPosition(i));
+						Bounds += VertPosF;
 					}
+
+					// Transform bounds to world space
+					Bounds = Bounds.TransformBy(MeshTransform);
 
 					// Use bounding box corners as simplified convex hull
 					const FVector Center = Bounds.GetCenter();
@@ -1350,8 +1356,9 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 		else if (MeshCol.MeshSource == EMeshCollisionSourceType::PhysicsAsset && MeshCol.PhysicsAsset)
 		{
 			// Use physics body from physics asset
-			for (const UBodySetup* BodySetup : MeshCol.PhysicsAsset->BodySetup)
+			for (const TSoftObjectPtr<UBodySetup>& BodySetupPtr : MeshCol.PhysicsAsset->SkeletalBodySetups)
 			{
+				const UBodySetup* BodySetup = BodySetupPtr.LoadSynchronous();
 				if (BodySetup && BodySetup->AggGeom.ConvexElems.Num() > 0)
 				{
 					for (const FKConvexElem& ConvexElem : BodySetup->AggGeom.ConvexElems)

@@ -6,13 +6,14 @@
 #include "ShaderParameterStruct.h"
 #include "GlobalShader.h"
 #include "RHICommandList.h"
-#include "PhysicsUtilities.h"
+#include "RHIShaderPlatform.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogKawaiiPhysicsGPU, Log, All);
 
 bool UKawaiiPhysicsGPUCompute::IsGPUSimulationAvailable()
 {
-	return GRHISupportsComputeShaders && !IsOpenGLPlatform(GMaxRHIShaderPlatform);
+	return !IsOpenGLPlatform(GMaxRHIShaderPlatform);
 }
 
 bool UKawaiiPhysicsGPUCompute::Initialize(int32 NumBones)

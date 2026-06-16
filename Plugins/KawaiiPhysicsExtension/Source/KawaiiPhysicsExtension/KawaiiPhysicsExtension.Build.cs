@@ -31,6 +31,9 @@ public class KawaiiPhysicsExtension : ModuleRules
 			{
 				"Slate",
 				"SlateCore",
+				"UMG",
+				"RHI",
+				"RenderCore",
 			}
 		);
 

@@ -33,35 +33,34 @@ public:
 	{
 		FKawaiiPhysicsSettings Settings;
 
-		// Damping: AnimDynamics uses LinearDamping (0-10), KawaiiPhysics uses Damping (0-1)
-		Settings.Damping = FMath::Clamp(AnimDynamics.LinearDamping / 10.0f, 0.0f, 1.0f);
+		// Damping: AnimDynamics uses LinearDampingOverride (0-10 range, default 0.7), KawaiiPhysics uses Damping (0-1)
+		const float Damping = AnimDynamics.bOverrideLinearDamping ? AnimDynamics.LinearDampingOverride : 0.7f;
+		Settings.Damping = FMath::Clamp(Damping / 10.0f, 0.0f, 1.0f);
 
-		// Stiffness: AnimDynamics uses SpringStiffness (0-1000), KawaiiPhysics uses Stiffness (0-1)
-		Settings.Stiffness = FMath::Clamp(AnimDynamics.SpringStiffness / 100.0f, 0.0f, 1.0f);
+		// Stiffness: AnimDynamics uses LinearSpringConstant, KawaiiPhysics uses Stiffness (0-1)
+		Settings.Stiffness = FMath::Clamp(AnimDynamics.LinearSpringConstant / 100.0f, 0.0f, 1.0f);
 
-		// LimitAngle: AnimDynamics uses AngleConstraint
-		Settings.LimitAngle = AnimDynamics.AngularConstraintAngle;
+		// LimitAngle: AnimDynamics stores angular constraint in PhysicsBodyDefinitions[0].ConstraintSetup.ConeAngle
+		if (AnimDynamics.PhysicsBodyDefinitions.Num() > 0)
+		{
+			Settings.LimitAngle = AnimDynamics.PhysicsBodyDefinitions[0].ConstraintSetup.ConeAngle;
+		}
 
-		// Collision Radius: AnimDynamics uses SphereCollisionRadius
-		Settings.Radius = AnimDynamics.SphereCollisionRadius;
+		// Collision Radius: AnimDynamics stores per-body in PhysicsBodyDefinitions[0].SphereCollisionRadius
+		if (AnimDynamics.PhysicsBodyDefinitions.Num() > 0)
+		{
+			Settings.Radius = AnimDynamics.PhysicsBodyDefinitions[0].SphereCollisionRadius;
+		}
 
-		// World Damping
-		Settings.WorldDampingLocation = FMath::Clamp(1.0f - AnimDynamics.WorldDampingTranslation, 0.0f, 1.0f);
-		Settings.WorldDampingRotation = FMath::Clamp(1.0f - AnimDynamics.WorldDampingRotation, 0.0f, 1.0f);
+		// World Damping: Not available at top level in UE 5.5 AnimDynamics
+		// KawaiiPhysics defaults are reasonable approximations
+		Settings.WorldDampingLocation = 0.3f;
+		Settings.WorldDampingRotation = 0.3f;
 
-		// Gravity Scale: AnimDynamics has bApplyGravity, KawaiiPhysics uses Gravity vector
-		// NOTE: AnimDynamics gravity is per-bone scale, KawaiiPhysics uses global Gravity vector
-		// User must manually set Gravity in KawaiiPhysics if AnimDynamics had gravity enabled
+		// Gravity Scale: AnimDynamics uses GravityScale or bUseGravityOverride/GravityOverride
+		// KawaiiPhysics uses global Gravity vector — user must manually configure
 
-		// Per-axis constraints: AnimDynamics has LinearX/Y/Z and AngularX/Y/Z
-		// KawaiiPhysics uses Twist/Swing decomposition instead
-		// If AnimDynamics had asymmetric constraints, user must manually configure Twist/Swing
-
-		// Snap to reference pose: AnimDynamics has SnapPosition/SnapRotation
-		// KawaiiPhysics has no direct equivalent — use Damping/Stiffness to control return-to-pose
-
-		// BoundBone: AnimDynamics can bind simulation to another bone
-		// KawaiiPhysics uses SimulationBaseBone for similar purpose
+		// BoundBone → SimulationBaseBone
 		// User must manually set SimulationBaseBone if AnimDynamics had BoundBone
 
 		return Settings;
@@ -84,8 +83,7 @@ public:
 			return false;
 		}
 
-		TArray<UAnimInstance*> LinkedInstances;
-		AnimInstance->GetLinkedAnimInstances(LinkedInstances);
+		const TArray<UAnimInstance*>& LinkedInstances = const_cast<const USkeletalMeshComponent*>(SkelComp)->GetLinkedAnimInstances();
 
 		for (UAnimInstance* LinkedInstance : LinkedInstances)
 		{

@@ -36,6 +36,7 @@ class UKawaiiPhysicsBoneConstraintsDataAsset;
 class UKawaiiPhysicsGPUCompute;
 class UKawaiiPhysicsPresetAsset;
 class UKawaiiPhysicsAnimDynamicsBridge;
+struct FAnimInstanceProxy;
 
 #if ENABLE_ANIM_DEBUG
 extern KAWAIIPHYSICSEXTENSION_API TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsEnable;
@@ -283,6 +284,19 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 
 	/** Accumulator for fixed-timestep sub-stepping (internal, do not set) */
 	float SimulationTimeAccumulator = 0.0f;
+
+	/** Ragdoll blend weight (0 = full Kawaii, 1 = full ragdoll) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Ragdoll Blend",
+		meta = (PinHiddenByDefault, ClampMin = "0", ClampMax = "1"))
+	float RagdollBlendWeight = 0.0f;
+
+	/** Speed of ragdoll blend transition */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Ragdoll Blend",
+		meta = (PinHiddenByDefault, ClampMin = "0.1", ClampMax = "20", EditCondition = "RagdollBlendWeight > 0"))
+	float RagdollBlendSpeed = 10.0f;
+
+	/** Frame counter for deterministic noise */
+	int32 FrameCount = 0;
 
 	/**
 	* Сглаживать резкие движения (Motion Warping/Teleport).
@@ -966,7 +980,6 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 	* @param ChainPrefixes - Prefixes for each chain (e.g., {"skirt_L", "skirt_R"})
 	* @return Number of constraints generated
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Bone Constraint", meta = (BlueprintThreadSafe))
 	int32 AutoGenerateGridConstraints(USkeletalMeshComponent* SkelComp, FName RootBoneName,
 	                                  TArray<FName> ChainPrefixes);
 
@@ -1179,6 +1192,15 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics")
 	float DeltaTime = 0.0f;
 
+	/** Stores the delta time from the previous frame. */
+	float DeltaTimeOld = 0.0f;
+
+	/** Cached AnimInstanceProxy pointer (set during evaluation, used by library functions) */
+	FAnimInstanceProxy* AnimInstanceProxyForLib = nullptr;
+
+	/** Get AnimInstanceProxy from AnimInstance (needed by library functions) */
+	FAnimInstanceProxy* GetAnimInstanceProxyAccess() const { return AnimInstanceProxyForLib; }
+
 private:
 	/**
 	* ボーン間のスペースとRadiusに基づき、挿入可能なダミーボーン数を計算（自動補正）
@@ -1296,11 +1318,6 @@ private:
 	TArray<FName> IgnoreBoneNamePrefixCache;
 	// スイープ結果のスクラッチ（フレーム間でcapacityを再利用） / Sweep-result scratch (reuses capacity across frames)
 	TArray<FHitResult> WorldCollisionHitsScratch;
-
-	/**
-	* Stores the delta time from the previous frame.
-	*/
-	float DeltaTimeOld = 0.0f;
 
 	// ===== 固定タイムステップ・サブステップ化（UKawaiiPhysicsDeveloperSettings 連動） =====
 	// Fixed-timestep substepping (driven by UKawaiiPhysicsDeveloperSettings)
@@ -1744,7 +1761,9 @@ protected:
 	 * @param SkelComp The skeletal mesh component.
 	 * @param ChainRoots Array of bone chain root names to generate collisions for.
 	 */
+public:
 	void AutoGenerateCollisions(const USkeletalMeshComponent* SkelComp, const TArray<FName>& ChainRoots);
+protected:
 
 	void Simulate(FKawaiiPhysicsModifyBone& Bone, const FSceneInterface* Scene, const FTransform& ComponentTransform,
 	              const float& Exponent, const USkeletalMeshComponent* SkelComp,

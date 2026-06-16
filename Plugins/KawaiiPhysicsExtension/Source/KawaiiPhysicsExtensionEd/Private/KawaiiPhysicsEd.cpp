@@ -1,26 +1,31 @@
 // Copyright 2019-2026 pafuhana1213. All Rights Reserved.
 
 #include "KawaiiPhysicsEd.h"
+#include "KawaiiPhysics.h"
 #include "Modules/ModuleManager.h"
 #include "Textures/SlateIcon.h"
 #include "KawaiiPhysicsEditMode.h"
+#include "EditorModeRegistry.h"
+#include "AnimationEditMode.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogKawaiiPhysicsExtensionEd, Log, All);
 
 #define LOCTEXT_NAMESPACE "FKawaiiPhysicsExtensionModuleEd"
 
 
 void FKawaiiPhysicsExtensionEdModule::StartupModule()
 {
-	FEditorModeRegistry::Get().RegisterMode<FKawaiiPhysicsEditMode>("AnimGraph.SkeletalControl.KawaiiPhysicsExtension",
+	FEditorModeRegistry::Get().RegisterMode<FKawaiiPhysicsExtensionEditMode>("AnimGraph.SkeletalControl.KawaiiPhysicsExtension",
 	                                                                LOCTEXT("FKawaiiPhysicsExtensionEditMode", "Kawaii Physics"),
 	                                                                FSlateIcon(), false);
-	UE_LOG(LogKawaiiPhysicsExtension, Log, TEXT("KawaiiPhysicsExtensionEd module started"));
+	UE_LOG(LogKawaiiPhysicsExtensionEd, Log, TEXT("KawaiiPhysicsExtensionEd module started"));
 }
 
 
 void FKawaiiPhysicsExtensionEdModule::ShutdownModule()
 {
 	FEditorModeRegistry::Get().UnregisterMode("AnimGraph.SkeletalControl.KawaiiPhysicsExtension");
-	UE_LOG(LogKawaiiPhysicsExtension, Log, TEXT("KawaiiPhysicsExtensionEd module shutdown"));
+	UE_LOG(LogKawaiiPhysicsExtensionEd, Log, TEXT("KawaiiPhysicsExtensionEd module shutdown"));
 }
 
 #undef LOCTEXT_NAMESPACE

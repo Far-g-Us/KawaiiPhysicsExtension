@@ -995,12 +995,12 @@ public:
 		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
 			TEXT("AutoFitCollisions"),
 			[SkelComp, ChainRoots, bFitSpheres, bFitCapsules, Padding](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
-				if (!SkelComp || !SkelComp->GetSkeleton())
+				if (!SkelComp || !SkelComp->GetSkeletalMeshAsset() || !SkelComp->GetSkeletalMeshAsset()->GetSkeleton())
 				{
 					return;
 				}
 
-				const USkeleton* Skeleton = SkelComp->GetSkeleton();
+				const USkeleton* Skeleton = SkelComp->GetSkeletalMeshAsset()->GetSkeleton();
 				const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
 
 				// Fit sphere collisions
@@ -1013,8 +1013,10 @@ public:
 							const int32 BoneIndex = RefSkeleton.FindBoneIndex(Sphere.DrivingBone.BoneName);
 							if (BoneIndex >= 0)
 							{
-								// Get bone bounds
-								FBox BoneBounds = RefSkeleton.GetRefBonePose()[BoneIndex].GetTranslationAndScale().GetBox();
+								// Get bone bounds from transform
+								const FTransform& BoneTM = RefSkeleton.GetRefBonePose()[BoneIndex];
+								const FVector BoneExtent = BoneTM.GetScale3D();
+								FBox BoneBounds(BoneTM.GetTranslation() - BoneExtent, BoneTM.GetTranslation() + BoneExtent);
 								const float Radius = (BoneBounds.GetExtent() + Padding).GetMax();
 								Sphere.Radius = FMath::Max(Radius, 1.0f);
 							}
@@ -1033,7 +1035,9 @@ public:
 							if (BoneIndex >= 0)
 							{
 								// Get bone bounds and child bone for capsule length
-								FBox BoneBounds = RefSkeleton.GetRefBonePose()[BoneIndex].GetTranslationAndScale().GetBox();
+								const FTransform& BoneTM = RefSkeleton.GetRefBonePose()[BoneIndex];
+								const FVector BoneExtent = BoneTM.GetScale3D();
+								FBox BoneBounds(BoneTM.GetTranslation() - BoneExtent, BoneTM.GetTranslation() + BoneExtent);
 								const FVector Extent = BoneBounds.GetExtent();
 
 								// Fit radius from X/Y extent
@@ -1425,7 +1429,7 @@ public:
 
 				for (const FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
 				{
-					if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.BoneIndex.IsValid())
+					if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.HasValidSetup())
 					{
 						continue;
 					}
@@ -1464,13 +1468,19 @@ public:
 		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
 			TEXT("ExportPhysicsCurvesForAudio"),
 			[](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
-				if (!InKawaiiPhysics.AnimInstanceProxy)
+				FAnimInstanceProxy* Proxy = InKawaiiPhysics.GetAnimInstanceProxyAccess();
+				if (!Proxy)
+				{
+					return;
+				}
+				UAnimInstance* AnimInstance = Cast<UAnimInstance>(Proxy->GetAnimInstanceObject());
+				if (!AnimInstance)
 				{
 					return;
 				}
 				for (const FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
 				{
-					if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.BoneIndex.IsValid())
+					if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.HasValidSetup())
 					{
 						continue;
 					}
@@ -1478,8 +1488,7 @@ public:
 						/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
 					const FName VelocityCurveName = *FString::Printf(
 						TEXT("Kawaii_Physics_%s_Velocity"), *Bone.BoneRef.BoneName.ToString());
-					const_cast<FAnimInstanceProxy*>(InKawaiiPhysics.AnimInstanceProxy)
-						->SetCurveValue(VelocityCurveName, Velocity);
+					AnimInstance->AddCurveValue(VelocityCurveName, Velocity);
 				}
 			});
 	}
@@ -1549,8 +1558,6 @@ public:
 			[BoneName, Offset, Radius, bOuter](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				FSphericalLimit Sphere;
 				Sphere.DrivingBone.BoneName = BoneName;
-				Sphere.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
-					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
 				Sphere.OffsetLocation = Offset;
 				Sphere.Radius = Radius;
 				Sphere.LimitType = bOuter ? ESphericalLimitType::Outer : ESphericalLimitType::Inner;
@@ -1571,8 +1578,6 @@ public:
 			[BoneName, Offset, Radius, Length](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				FCapsuleLimit Capsule;
 				Capsule.DrivingBone.BoneName = BoneName;
-				Capsule.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
-					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
 				Capsule.OffsetLocation = Offset;
 				Capsule.Radius = Radius;
 				Capsule.Length = Length;
@@ -1593,8 +1598,6 @@ public:
 			[BoneName, Offset, Extent](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				FBoxLimit Box;
 				Box.DrivingBone.BoneName = BoneName;
-				Box.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
-					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
 				Box.OffsetLocation = Offset;
 				Box.Extent = Extent;
 				Box.bEnable = true;
@@ -1614,8 +1617,6 @@ public:
 			[BoneName, Offset, Rotation](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				FPlanarLimit Plane;
 				Plane.DrivingBone.BoneName = BoneName;
-				Plane.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
-					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
 				Plane.OffsetLocation = Offset;
 				Plane.OffsetRotation = Rotation;
 				Plane.bEnable = true;
@@ -1669,8 +1670,6 @@ public:
 			[BoneName, ConvexHullVertices, MeshScale](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				FKawaiiPhysicsMeshCollision MeshCol;
 				MeshCol.DrivingBone.BoneName = BoneName;
-				MeshCol.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
-					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
 				MeshCol.MeshSource = EMeshCollisionSourceType::ConvexHull;
 				MeshCol.ConvexHullVertices = ConvexHullVertices;
 				MeshCol.MeshScale = MeshScale;
@@ -1691,8 +1690,6 @@ public:
 			[BoneName, CollisionMesh, MeshScale](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				FKawaiiPhysicsMeshCollision MeshCol;
 				MeshCol.DrivingBone.BoneName = BoneName;
-				MeshCol.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
-					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
 				MeshCol.MeshSource = EMeshCollisionSourceType::StaticMesh;
 				MeshCol.CollisionMesh = CollisionMesh;
 				MeshCol.MeshScale = MeshScale;
@@ -1713,8 +1710,6 @@ public:
 			[BoneName, PhysicsAsset, PhysicsBodyName, MeshScale](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				FKawaiiPhysicsMeshCollision MeshCol;
 				MeshCol.DrivingBone.BoneName = BoneName;
-				MeshCol.DrivingBone.Initialize(InKawaiiPhysics.ModifyBones.Num() > 0
-					? InKawaiiPhysics.ModifyBones[0].BoneRef.GetSkeleton() : nullptr);
 				MeshCol.MeshSource = EMeshCollisionSourceType::PhysicsAsset;
 				MeshCol.PhysicsAsset = PhysicsAsset;
 				MeshCol.PhysicsBodyName = PhysicsBodyName;

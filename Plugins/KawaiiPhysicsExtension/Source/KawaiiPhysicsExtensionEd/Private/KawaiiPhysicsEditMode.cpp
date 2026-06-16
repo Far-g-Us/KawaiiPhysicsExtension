@@ -13,12 +13,13 @@
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogKawaiiPhysicsExtensionEd, Log, All);
+
 #if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 #include "SceneView.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "KawaiiPhysicsEditMode"
-DEFINE_LOG_CATEGORY(LogKawaiiPhysicsExtension);
 
 struct HKawaiiPhysicsHitProxy : HHitProxy
 {
@@ -928,10 +929,10 @@ void FKawaiiPhysicsExtensionEditMode::DoTranslation(FVector& InTranslation)
 	FCollisionLimitBase* CollisionGraph = GetSelectCollisionLimitGraph();
 	if (!CollisionRuntime || !CollisionGraph)
 	{
-		UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT( "Fail to edit limit." ));
+		UE_LOG(LogKawaiiPhysicsExtensionEd, Warning, TEXT( "Fail to edit limit." ));
 		if (SelectCollisionSourceType == ECollisionSourceType::DataAsset)
 		{
-			UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT( "Please try saving the DataAsset (%s) and compile this ABP." ),
+			UE_LOG(LogKawaiiPhysicsExtensionEd, Warning, TEXT( "Please try saving the DataAsset (%s) and compile this ABP." ),
 			       *RuntimeNode->LimitsDataAsset.GetName());
 		}
 		return;
@@ -968,10 +969,10 @@ void FKawaiiPhysicsExtensionEditMode::DoRotation(FRotator& InRotation)
 	FCollisionLimitBase* CollisionGraph = GetSelectCollisionLimitGraph();
 	if (!CollisionRuntime || !CollisionGraph)
 	{
-		UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT( "Fail to edit limit." ));
+		UE_LOG(LogKawaiiPhysicsExtensionEd, Warning, TEXT( "Fail to edit limit." ));
 		if (SelectCollisionSourceType == ECollisionSourceType::DataAsset)
 		{
-			UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT( "Please try saving the DataAsset (%s) and compile this ABP." ),
+			UE_LOG(LogKawaiiPhysicsExtensionEd, Warning, TEXT( "Please try saving the DataAsset (%s) and compile this ABP." ),
 			       *RuntimeNode->LimitsDataAsset.GetName());
 		}
 		return;
@@ -1008,10 +1009,10 @@ void FKawaiiPhysicsExtensionEditMode::DoScale(FVector& InScale)
 	FCollisionLimitBase* CollisionGraph = GetSelectCollisionLimitGraph();
 	if (!CollisionRuntime || !CollisionGraph)
 	{
-		UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT( "Fail to edit limit." ));
+		UE_LOG(LogKawaiiPhysicsExtensionEd, Warning, TEXT( "Fail to edit limit." ));
 		if (SelectCollisionSourceType == ECollisionSourceType::DataAsset)
 		{
-			UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT( "Please try saving the DataAsset (%s) and compile this ABP." ),
+			UE_LOG(LogKawaiiPhysicsExtensionEd, Warning, TEXT( "Please try saving the DataAsset (%s) and compile this ABP." ),
 			       *RuntimeNode->LimitsDataAsset.GetName());
 		}
 		return;

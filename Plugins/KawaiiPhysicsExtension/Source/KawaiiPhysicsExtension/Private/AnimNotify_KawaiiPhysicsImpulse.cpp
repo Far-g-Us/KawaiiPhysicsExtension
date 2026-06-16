@@ -34,7 +34,10 @@ void UAnimNotify_KawaiiPhysicsImpulse::Notify(USkeletalMeshComponent* MeshComp, 
 
 	// Try to find KawaiiPhysics node in linked anim instances
 	TArray<UAnimInstance*> LinkedInstances;
-	AnimInstance->GetLinkedAnimInstances(LinkedInstances);
+	for (UAnimInstance* Instance : const_cast<const USkeletalMeshComponent*>(MeshComp)->GetLinkedAnimInstances())
+	{
+		LinkedInstances.Add(Instance);
+	}
 
 	// Also check the primary AnimInstance itself
 	TArray<UAnimInstance*> AllInstances = LinkedInstances;

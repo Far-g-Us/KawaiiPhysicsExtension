@@ -50,10 +50,10 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce_Vortex : public F
 
 		const float Falloff = FalloffRadius > 0 ? (1.0f - Dist / FalloffRadius) : 1.0f;
 		const FVector Tangent = FVector::CrossProduct(Axis.GetSafeNormal(), ToBone.GetSafeNormal());
-		const FVector Force = Tangent * Strength * Falloff + Axis.GetSafeNormal() * Lift * Falloff;
+		const FVector VortexForce = Tangent * Strength * Falloff + Axis.GetSafeNormal() * Lift * Falloff;
 
 		const FVector ForceSim = Node.ConvertSimulationSpaceVector(
-			PoseContext, EKawaiiPhysicsSimulationSpace::WorldSpace, Node.SimulationSpace, Force);
+			PoseContext, EKawaiiPhysicsSimulationSpace::WorldSpace, Node.SimulationSpace, VortexForce);
 		Bone.Location += ForceSim * Node.GetStepDeltaTime();
 	}
 };
@@ -98,10 +98,10 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce_Radial : public F
 
 		const float Falloff = FalloffRadius > 0 ? (1.0f - Dist / FalloffRadius) : 1.0f;
 		const FVector Direction = ToBone.GetSafeNormal();
-		const FVector Force = Direction * Strength * Falloff + FVector::UpVector * UpwardBias * Falloff;
+		const FVector RadialForce = Direction * Strength * Falloff + FVector::UpVector * UpwardBias * Falloff;
 
 		const FVector ForceSim = Node.ConvertSimulationSpaceVector(
-			PoseContext, EKawaiiPhysicsSimulationSpace::WorldSpace, Node.SimulationSpace, Force);
+			PoseContext, EKawaiiPhysicsSimulationSpace::WorldSpace, Node.SimulationSpace, RadialForce);
 		Bone.Location += ForceSim * Node.GetStepDeltaTime();
 	}
 };
@@ -149,10 +149,10 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce_Turbulence : publ
 		const float NoiseY = FMath::PerlinNoise3D(FVector(BoneWorldLoc * SpatialScale + FVector(0, Time, 0)));
 		const float NoiseZ = FMath::PerlinNoise3D(FVector(BoneWorldLoc * SpatialScale + FVector(0, 0, Time)));
 
-		const FVector Force = FVector(NoiseX, NoiseY, NoiseZ) * Strength;
+		const FVector TurbForce = FVector(NoiseX, NoiseY, NoiseZ) * Strength;
 
 		const FVector ForceSim = Node.ConvertSimulationSpaceVector(
-			PoseContext, EKawaiiPhysicsSimulationSpace::WorldSpace, Node.SimulationSpace, Force);
+			PoseContext, EKawaiiPhysicsSimulationSpace::WorldSpace, Node.SimulationSpace, TurbForce);
 		Bone.Location += ForceSim * Node.GetStepDeltaTime();
 	}
 };

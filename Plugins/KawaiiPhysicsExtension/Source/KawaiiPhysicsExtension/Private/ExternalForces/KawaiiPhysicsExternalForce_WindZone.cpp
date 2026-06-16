@@ -124,9 +124,9 @@ bool FKawaiiPhysics_ExternalForce_WindZone::IsInsideZone(const FVector& ToBone) 
 float FKawaiiPhysics_ExternalForce_WindZone::GetFalloffMultiplier(float NormalizedDistance) const
 {
 	// Use curve if available
-	if (FalloffCurve.GetRichCurve()->GetNumKeys() > 0)
+	if (FalloffCurve.GetRichCurveConst()->GetNumKeys() > 0)
 	{
-		return FalloffCurve.GetRichCurve()->Eval(NormalizedDistance);
+		return FalloffCurve.GetRichCurveConst()->Eval(NormalizedDistance);
 	}
 
 	// Default: linear falloff
