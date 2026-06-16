@@ -234,6 +234,70 @@ public:
 		KAWAIIPHYSICS_VALUE_GETTER(float, BoneConstraintSubdivisionFeedbackScale);
 	}
 
+	// --- Chain Linking ---
+
+	/**
+	 * Create a constraint between the end bone of one chain and the start bone of another.
+	 * Useful for connecting chains (e.g., chain end → necklace start, belt → skirt).
+	 *
+	 * @param Chain1EndBone End bone of the first chain
+	 * @param Chain2StartBone Start bone of the second chain
+	 * @param ComplianceType Material type for the constraint (determines stiffness)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Chain Linking", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AddChainLink(
+		const FKawaiiPhysicsReference& KawaiiPhysics,
+		FName Chain1EndBone,
+		FName Chain2StartBone,
+		EXPBDComplianceType ComplianceType = EXPBDComplianceType::Leather)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AddChainLink"),
+			[Chain1EndBone, Chain2StartBone, ComplianceType](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				FModifyBoneConstraint NewConstraint;
+				NewConstraint.Bone1.BoneName = Chain1EndBone;
+				NewConstraint.Bone2.BoneName = Chain2StartBone;
+				NewConstraint.ComplianceType = ComplianceType;
+				NewConstraint.bOverrideCompliance = true;
+				InKawaiiPhysics.BoneConstraints.Add(NewConstraint);
+			});
+		return KawaiiPhysics;
+	}
+
+	/**
+	 * Remove a chain link constraint between two bones.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Chain Linking", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference RemoveChainLink(
+		const FKawaiiPhysicsReference& KawaiiPhysics,
+		FName Chain1EndBone,
+		FName Chain2StartBone)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("RemoveChainLink"),
+			[Chain1EndBone, Chain2StartBone](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.BoneConstraints.RemoveAll([&Chain1EndBone, &Chain2StartBone](const FModifyBoneConstraint& C) {
+					return (C.Bone1.BoneName == Chain1EndBone && C.Bone2.BoneName == Chain2StartBone)
+						|| (C.Bone1.BoneName == Chain2StartBone && C.Bone2.BoneName == Chain1EndBone);
+				});
+			});
+		return KawaiiPhysics;
+	}
+
+	/**
+	 * Remove all chain link constraints.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Chain Linking", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference ClearChainLinks(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("ClearChainLinks"),
+			[](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.BoneConstraints.Empty();
+			});
+		return KawaiiPhysics;
+	}
+
 	/** TeleportDistanceThreshold */
 	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics", meta=(BlueprintThreadSafe))
 	static FKawaiiPhysicsReference SetTeleportDistanceThreshold(const FKawaiiPhysicsReference& KawaiiPhysics,
@@ -904,6 +968,93 @@ public:
 			TEXT("AutoGenerateCollisions"),
 			[SkelComp, ChainRoots](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				InKawaiiPhysics.AutoGenerateCollisions(SkelComp, ChainRoots);
+			});
+		return KawaiiPhysics;
+	}
+
+	/**
+	 * Auto-fit collision shapes to bone bounds.
+	 * Analyzes the skeletal mesh and automatically adjusts collision sphere radii and capsule lengths
+	 * to match the actual bone bounds. More accurate than AutoGenerateCollisions.
+	 *
+	 * @param SkelComp The skeletal mesh component to analyze
+	 * @param ChainRoots Root bone names of chains to fit collisions for
+	 * @param bFitSpheres Fit sphere collision radii to bone bounds
+	 * @param bFitCapsules Fit capsule collision lengths/radii to bone bounds
+	 * @param Padding Extra padding around bone bounds (cm)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Auto Collision", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AutoFitCollisions(
+		const FKawaiiPhysicsReference& KawaiiPhysics,
+		USkeletalMeshComponent* SkelComp,
+		const TArray<FName>& ChainRoots,
+		bool bFitSpheres = true,
+		bool bFitCapsules = true,
+		float Padding = 1.0f)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AutoFitCollisions"),
+			[SkelComp, ChainRoots, bFitSpheres, bFitCapsules, Padding](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				if (!SkelComp || !SkelComp->GetSkeleton())
+				{
+					return;
+				}
+
+				const USkeleton* Skeleton = SkelComp->GetSkeleton();
+				const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+
+				// Fit sphere collisions
+				if (bFitSpheres)
+				{
+					for (FSphericalLimit& Sphere : InKawaiiPhysics.SphericalLimits)
+					{
+						if (!Sphere.BoneName.IsNone())
+						{
+							const int32 BoneIndex = RefSkeleton.FindBoneIndex(Sphere.BoneName);
+							if (BoneIndex >= 0)
+							{
+								// Get bone bounds
+								FBox BoneBounds = RefSkeleton.GetRefBonePose()[BoneIndex].GetTranslationAndScale().GetBox();
+								const float Radius = (BoneBounds.GetExtent() + Padding).GetMax();
+								Sphere.LimitRadius = FMath::Max(Radius, 1.0f);
+							}
+						}
+					}
+				}
+
+				// Fit capsule collisions
+				if (bFitCapsules)
+				{
+					for (FCapsuleLimit& Capsule : InKawaiiPhysics.CapsuleLimits)
+					{
+						if (!Capsule.BoneName.IsNone())
+						{
+							const int32 BoneIndex = RefSkeleton.FindBoneIndex(Capsule.BoneName);
+							if (BoneIndex >= 0)
+							{
+								// Get bone bounds and child bone for capsule length
+								FBox BoneBounds = RefSkeleton.GetRefBonePose()[BoneIndex].GetTranslationAndScale().GetBox();
+								const FVector Extent = BoneBounds.GetExtent();
+
+								// Fit radius from X/Y extent
+								Capsule.Radius = FMath::Max(FMath::Max(Extent.X, Extent.Y) + Padding, 1.0f);
+
+								// Fit length from Z extent or child bone distance
+								if (BoneIndex + 1 < RefSkeleton.GetNum())
+								{
+									const FVector BonePos = RefSkeleton.GetRefBonePose()[BoneIndex].GetLocation();
+									const FVector ChildPos = RefSkeleton.GetRefBonePose()[BoneIndex + 1].GetLocation();
+									const float BoneLength = FVector::Dist(BonePos, ChildPos);
+									Capsule.HalfHeight = FMath::Max(BoneLength * 0.5f + Padding, Capsule.Radius);
+								}
+								else
+								{
+									Capsule.HalfHeight = FMath::Max(Extent.Z + Padding, Capsule.Radius);
+								}
+							}
+						}
+					}
+				}
 			});
 		return KawaiiPhysics;
 	}
