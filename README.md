@@ -4,7 +4,7 @@ Fork of [KawaiiPhysics](https://github.com/pafuhana1213/KawaiiPhysics) for **Unr
 
 > **Original plugin**: [pafuhana1213/KawaiiPhysics](https://github.com/pafuhana1213/KawaiiPhysics)  
 > **This fork**: [Far-g-Us/KawaiiPhysicsExtension](https://github.com/Far-g-Us/KawaiiPhysicsExtension)  
-> **Version**: 1.31.1 | **UE 5.5** | **作者: A1ZZM**
+> **Version**: 1.31.1 | **UE 5.5** | **Author: A1ZZM**
 
 ---
 
@@ -48,7 +48,7 @@ cd YourProject/Plugins/
 git clone https://github.com/Far-g-Us/KawaiiPhysicsExtension.git
 ```
 
-### Вариант 2:手动 копирование
+### Вариант 2: Ручная установка
 1. Скачайте архив с [GitHub Releases](https://github.com/Far-g-Us/KawaiiPhysicsExtension/releases)
 2. Распакуйте в `YourProject/Plugins/KawaiiPhysicsExtension/`
 3. Пересоберите проект
@@ -105,7 +105,7 @@ KawaiiPhysicsExtension/
 
 ### Anim Graph Node
 **KawaiiPhysics** — основной нод в AnimGraph. Поддерживает:
-- Multiple bone chains с自动 обнаружением
+- Multiple bone chains with auto-detection
 - World / BaseBone / Component simulation space
 - LOD-aware physics (авто-отключение на дальних LOD)
 - Substepping и WarmUp для стабильности
@@ -219,7 +219,7 @@ UKawaiiPhysicsLibrary::SetSelfCollisionEnabled(Node, bool)
 
 - [pafuhana1213](https://github.com/pafuhana1213) — автор оригинального KawaiiPhysics
 - [Unreal Engine](https://www.unrealengine.com/) — Epic Games
-- UE 5.5 API reference и社區
+- UE 5.5 API reference and community
 
 ---
 
