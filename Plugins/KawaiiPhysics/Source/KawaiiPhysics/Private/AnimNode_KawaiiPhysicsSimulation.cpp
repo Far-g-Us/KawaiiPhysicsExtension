@@ -117,6 +117,27 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 	// Keep this frame's real dt (DeltaTime is treated as FixedDt during substeps)
 	FrameDeltaTime = DeltaTime;
 
+	// Deterministic mode: accumulator-based fixed timestep for network consistency
+	if (bDeterministicMode)
+	{
+		SimulationTimeAccumulator += DeltaTime;
+		if (SimulationTimeAccumulator < DeterministicFixedDt)
+		{
+			// Not enough time accumulated — skip this frame's simulation
+			FrameDeltaTime = 0.0f;
+			DeltaTime = 0.0f;
+		}
+		else
+		{
+			// Use fixed timestep, consume accumulator
+			FrameDeltaTime = DeterministicFixedDt;
+			DeltaTime = DeterministicFixedDt;
+			SimulationTimeAccumulator -= DeterministicFixedDt;
+			// Clamp to prevent spiral of death
+			SimulationTimeAccumulator = FMath::Min(SimulationTimeAccumulator, DeterministicFixedDt);
+		}
+	}
+
 	const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
 
 	// Save Prev/Pose Info , Check SkipSimulate
@@ -203,8 +224,8 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 
 	// ===== サブステップ設定キャッシュ & Scene 取得（毎フレーム1回） =====
 	const UKawaiiPhysicsDeveloperSettings* KawaiiSettings = GetDefault<UKawaiiPhysicsDeveloperSettings>();
-	bUseFixedSubsteppingCached = KawaiiSettings->bUseFixedSubstepping;
-	MaxSubstepsCached = FMath::Max(1, KawaiiSettings->MaxSubsteps);
+	bUseFixedSubsteppingCached = KawaiiSettings ? KawaiiSettings->bUseFixedSubstepping : false;
+	MaxSubstepsCached = KawaiiSettings ? FMath::Max(1, KawaiiSettings->MaxSubsteps) : 1;
 
 	const UWorld* World = SkelComp ? SkelComp->GetWorld() : nullptr;
 	const FSceneInterface* Scene = World ? World->Scene : nullptr;
@@ -304,6 +325,7 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 	{
 		if (Bone.ParentIndex < 0 && !Bone.bBridgeDummy && !(Bone.BoneRef.BoneIndex < 0 && !Bone.bDummy))
 		{
+			Bone.PrevPrevLocation = Bone.PrevLocation;
 			Bone.PrevLocation = Bone.Location;
 			Bone.Location = Bone.PoseLocation;
 		}
@@ -351,6 +373,7 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 					continue;
 				}
 
+				Bone.PrevPrevLocation = Bone.PrevLocation;
 				Bone.PrevLocation = Bone.Location;
 				Bone.Location = FMath::Lerp(
 					ModifyBones[Bone.InterBoneRealParentIndex].Location,
@@ -398,6 +421,7 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 				continue;
 			}
 
+			Bone.PrevPrevLocation = Bone.PrevLocation;
 			Bone.PrevLocation = Bone.Location;
 			Bone.Location = FMath::Lerp(EndA.Location, EndB.Location, Bone.InterBoneAlpha);
 			// LERP基準位置をPoseLocationに退避（コリジョン後の押し出し量 = Location - PoseLocation を測るため。
@@ -409,13 +433,24 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 	}
 
 	// External Force : PostApply
+	// Collect one-shot forces to remove after iteration to avoid invalidating the array
+	TArray<int32> OneShotForceIndices;
 	for (int i = 0; i < ExternalForces.Num(); ++i)
 	{
 		if (ExternalForces[i].IsValid())
 		{
 			auto& Force = ExternalForces[i].GetMutable<FKawaiiPhysics_ExternalForce>();
 			Force.PostApply(*this, Output);
+			if (Force.bIsOneShot)
+			{
+				OneShotForceIndices.Add(i);
+			}
 		}
+	}
+	// Remove one-shot forces in reverse order to preserve indices
+	for (int32 idx = OneShotForceIndices.Num() - 1; idx >= 0; --idx)
+	{
+		ExternalForces.RemoveAt(OneShotForceIndices[idx]);
 	}
 
 	// Adjust by Bone Constraints Before Collision
@@ -486,15 +521,15 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 	// Morph Target Driving: drive morph targets based on bone velocity
 	ApplyMorphTargetDriving(Output);
 
+	// Apply physics material per-bone settings (before pose blending so multipliers apply on top)
+	ApplyPhysicsMaterial();
+
+	// Apply state-driven physics switching (before pose blending so multipliers apply on top)
+	ApplyStateDrivenPhysics();
+
 	// Detect pose and apply pose-based blending
 	DetectPose();
 	ApplyPoseBlending();
-
-	// Apply state-driven physics switching
-	ApplyStateDrivenPhysics();
-
-	// Apply physics material per-bone settings
-	ApplyPhysicsMaterial();
 
 	// Apply advanced spring/damper model
 	ApplySpringDamper();
@@ -504,6 +539,12 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 
 	// Apply ragdoll blend
 	ApplyRagdollBlend();
+
+	// Apply bone filter (skip non-moving bones)
+	ApplyBoneFilter();
+
+	// Apply weapon/accessory pendulum physics
+	ApplyWeaponPhysics();
 
 	// Self-Collision: prevent bone overlap
 	ApplySelfCollision();
@@ -749,9 +790,26 @@ void FAnimNode_KawaiiPhysics::ApplyBoneScaling()
 		float Scale = 1.0f + (1.0f - Ratio) * Compensation;
 		Scale = FMath::Clamp(Scale, 1.0f / MaxScale, MaxScale);
 
-		// Apply scale to bone (store in a temporary scale vector)
-		// The actual bone scale is applied in the output phase
-		Bone.BoneScale = FVector(Scale);
+		// Apply scale to bone based on axis setting
+		const int32 Axis = Bone.PhysicsSettings.BoneScaleAxis;
+		switch (Axis)
+		{
+		case 0: // Uniform (all axes)
+			Bone.BoneScale = FVector(Scale);
+			break;
+		case 1: // X-axis only (width)
+			Bone.BoneScale = FVector(Scale, 1.0f, 1.0f);
+			break;
+		case 2: // Y-axis only (depth)
+			Bone.BoneScale = FVector(1.0f, Scale, 1.0f);
+			break;
+		case 3: // Z-axis only (height)
+			Bone.BoneScale = FVector(1.0f, 1.0f, Scale);
+			break;
+		default:
+			Bone.BoneScale = FVector(Scale);
+			break;
+		}
 	}
 }
 
@@ -763,7 +821,12 @@ void FAnimNode_KawaiiPhysics::ApplyMorphTargetDriving(FComponentSpacePoseContext
 		return;
 	}
 
-	USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkeletalMeshComponent();
+	if (!Output.AnimInstanceProxy)
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
 	if (!SkelComp)
 	{
 		return;
@@ -874,12 +937,11 @@ void FAnimNode_KawaiiPhysics::ApplyPoseBlending()
 			continue;
 		}
 
-		// Store original values on first frame
-		if (Bone.OriginalDamping <= 0.0f)
-		{
-			Bone.OriginalDamping = Bone.PhysicsSettings.Damping;
-			Bone.OriginalStiffness = Bone.PhysicsSettings.Stiffness;
-		}
+		// Always refresh original values from current settings before applying multipliers.
+		// This ensures pose blending is applied on top of whatever UpdatePhysicsSettingsOfModifyBones
+		// or LOD overrides set this frame, rather than compounding stale first-frame values.
+		Bone.OriginalDamping = Bone.PhysicsSettings.Damping;
+		Bone.OriginalStiffness = Bone.PhysicsSettings.Stiffness;
 
 		// Apply pose-based multipliers
 		Bone.PhysicsSettings.Damping = Bone.OriginalDamping * DampingMultiplier;
@@ -888,12 +950,17 @@ void FAnimNode_KawaiiPhysics::ApplyPoseBlending()
 }
 
 // Apply self-collision between bones
+// Optimization: skip pairs with distance > max collision range, only check bones from different chains
 void FAnimNode_KawaiiPhysics::ApplySelfCollision()
 {
 	if (!bEnableSelfCollision || ModifyBones.Num() < 2)
 	{
 		return;
 	}
+
+	// Maximum distance for self-collision check (skip pairs that are too far apart)
+	const float MaxCheckDist = SelfCollisionMinDistance * SelfCollisionRadiusMultiplier * 4.0f;
+	const float MaxCheckDistSq = MaxCheckDist * MaxCheckDist;
 
 	for (int32 i = 0; i < ModifyBones.Num(); ++i)
 	{
@@ -911,17 +978,22 @@ void FAnimNode_KawaiiPhysics::ApplySelfCollision()
 				continue;
 			}
 
-			// Skip if same chain (parent-child)
+			// Skip if same chain (parent-child or same root)
 			if (BoneA.ParentIndex == j || BoneB.ParentIndex == i)
 			{
 				continue;
 			}
 
-			const float MinDist = SelfCollisionMinDistance * SelfCollisionRadiusMultiplier;
+			// Early distance rejection (avoids sqrt for far pairs)
 			const FVector Delta = BoneB.Location - BoneA.Location;
 			const float DistSq = Delta.SizeSquared();
+			if (DistSq > MaxCheckDistSq || DistSq < KINDA_SMALL_NUMBER)
+			{
+				continue;
+			}
 
-			if (DistSq < MinDist * MinDist && DistSq > KINDA_SMALL_NUMBER)
+			const float MinDist = SelfCollisionMinDistance * SelfCollisionRadiusMultiplier;
+			if (DistSq < MinDist * MinDist)
 			{
 				const float Dist = FMath::Sqrt(DistSq);
 				const FVector PushDir = Delta / Dist;
@@ -1043,11 +1115,12 @@ void FAnimNode_KawaiiPhysics::ApplyStateDrivenPhysics()
 			continue;
 		}
 
-		// Store original on first frame
-		if (Bone.OriginalDamping <= 0.0f)
+		// Store original on first frame (only if not already stored by pose blending)
+		if (!Bone.bOriginalValuesStored)
 		{
 			Bone.OriginalDamping = Bone.PhysicsSettings.Damping;
 			Bone.OriginalStiffness = Bone.PhysicsSettings.Stiffness;
+			Bone.bOriginalValuesStored = true;
 		}
 
 		// Apply state settings
@@ -1059,13 +1132,9 @@ void FAnimNode_KawaiiPhysics::ApplyStateDrivenPhysics()
 }
 
 // Apply physics material per-bone settings
+// Priority: PerBoneMaterialOverrides > PhysicsMaterial > base settings
 void FAnimNode_KawaiiPhysics::ApplyPhysicsMaterial()
 {
-	if (!PhysicsMaterial)
-	{
-		return;
-	}
-
 	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
 	{
 		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
@@ -1073,17 +1142,33 @@ void FAnimNode_KawaiiPhysics::ApplyPhysicsMaterial()
 			continue;
 		}
 
-		FKawaiiPhysicsSettings MaterialSettings;
-		if (PhysicsMaterial->GetBoneSettings(Bone.BoneRef.BoneName, MaterialSettings))
+		// Priority 1: Per-bone explicit overrides (highest priority)
+		if (FKawaiiPhysicsSettings* Override = PerBoneMaterialOverrides.Find(Bone.BoneRef.BoneName))
 		{
-			// Apply material settings (override current)
-			Bone.PhysicsSettings.Damping = MaterialSettings.Damping;
-			Bone.PhysicsSettings.Stiffness = MaterialSettings.Stiffness;
-			Bone.PhysicsSettings.LimitAngle = MaterialSettings.LimitAngle;
-			Bone.PhysicsSettings.Radius = MaterialSettings.Radius;
-			Bone.PhysicsSettings.VolumePreservation = MaterialSettings.VolumePreservation;
-			Bone.PhysicsSettings.Pressure = MaterialSettings.Pressure;
-			Bone.PhysicsSettings.BoneScaleCompensation = MaterialSettings.BoneScaleCompensation;
+			Bone.PhysicsSettings.Damping = Override->Damping;
+			Bone.PhysicsSettings.Stiffness = Override->Stiffness;
+			Bone.PhysicsSettings.LimitAngle = Override->LimitAngle;
+			Bone.PhysicsSettings.Radius = Override->Radius;
+			Bone.PhysicsSettings.VolumePreservation = Override->VolumePreservation;
+			Bone.PhysicsSettings.Pressure = Override->Pressure;
+			Bone.PhysicsSettings.BoneScaleCompensation = Override->BoneScaleCompensation;
+			continue;
+		}
+
+		// Priority 2: Global PhysicsMaterial asset (prefix matching)
+		if (PhysicsMaterial)
+		{
+			FKawaiiPhysicsSettings MaterialSettings;
+			if (PhysicsMaterial->GetBoneSettings(Bone.BoneRef.BoneName, MaterialSettings))
+			{
+				Bone.PhysicsSettings.Damping = MaterialSettings.Damping;
+				Bone.PhysicsSettings.Stiffness = MaterialSettings.Stiffness;
+				Bone.PhysicsSettings.LimitAngle = MaterialSettings.LimitAngle;
+				Bone.PhysicsSettings.Radius = MaterialSettings.Radius;
+				Bone.PhysicsSettings.VolumePreservation = MaterialSettings.VolumePreservation;
+				Bone.PhysicsSettings.Pressure = MaterialSettings.Pressure;
+				Bone.PhysicsSettings.BoneScaleCompensation = MaterialSettings.BoneScaleCompensation;
+			}
 		}
 	}
 }
@@ -1128,7 +1213,7 @@ void FAnimNode_KawaiiPhysics::ApplyClothConstraints()
 		FKawaiiPhysicsSettings& Settings = Bone.PhysicsSettings;
 
 		// Shear constraint: resist diagonal movement
-		if (Settings.ShearStiffness > 0.0f)
+		if (Settings.ShearStiffness > 0.0f && ModifyBones.IsValidIndex(Bone.ParentIndex))
 		{
 			// Calculate shear force based on bone angle deviation
 			const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
@@ -1201,12 +1286,19 @@ void FAnimNode_KawaiiPhysics::ApplyClothConstraints()
 }
 
 // Apply ragdoll blend
+// Smoothly blends between KawaiiPhysics simulation and pose position.
+// RagdollBlendWeight controls the blend (0 = pure physics, 1 = pure pose).
+// RagdollBlendSpeed controls the interpolation speed.
 void FAnimNode_KawaiiPhysics::ApplyRagdollBlend()
 {
 	if (RagdollBlendWeight <= 0.0f)
 	{
 		return;
 	}
+
+	const float ClampedWeight = FMath::Clamp(RagdollBlendWeight, 0.0f, 1.0f);
+	const float ClampedSpeed = FMath::Max(RagdollBlendSpeed, 0.001f);
+	const float StepDt = FMath::Max(GetStepDeltaTime(), SMALL_NUMBER);
 
 	// Blend between physics position and pose position
 	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
@@ -1216,12 +1308,244 @@ void FAnimNode_KawaiiPhysics::ApplyRagdollBlend()
 			continue;
 		}
 
-		// Smooth blend using RagdollBlendSpeed
-		const float BlendAlpha = FMath::FInterpConstantTo(0.0f, 1.0f, GetStepDeltaTime(), RagdollBlendSpeed);
-		const float EffectiveBlend = FMath::Min(RagdollBlendWeight, BlendAlpha);
+		// Smooth blend toward target weight
+		const float BlendAlpha = FMath::FInterpConstantTo(0.0f, ClampedWeight, StepDt, ClampedSpeed);
 
-		// Blend toward pose position (ragdoll behavior)
-		Bone.Location = FMath::Lerp(Bone.Location, Bone.PoseLocation, EffectiveBlend);
+		// Position blend
+		Bone.Location = FMath::Lerp(Bone.Location, Bone.PoseLocation, BlendAlpha);
+
+		// Rotation blend (Slerp for smooth quaternion interpolation)
+		if (!Bone.PoseRotation.IsNearlyIdentity())
+		{
+			Bone.Rotation = FQuat::Slerp(Bone.Rotation, Bone.PoseRotation, BlendAlpha);
+		}
+	}
+}
+
+// Auto-detect bone chains from skeleton (hair, skirt, tail, breast)
+// Uses case-insensitive substring matching with topology-based fallback.
+void FAnimNode_KawaiiPhysics::AutoDetectBoneChains(const USkeletalMeshComponent* SkelComp)
+{
+	if (!bAutoDetectBoneChains || !SkelComp)
+	{
+		return;
+	}
+
+	const USkeletalMesh* SkeletalMesh = SkelComp->GetSkeletalMeshAsset();
+	if (!SkeletalMesh)
+	{
+		return;
+	}
+
+	const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
+	const int32 NumBones = RefSkeleton.GetNum();
+
+	// Chain type -> list of substrings to match (case-insensitive)
+	struct FChainPattern
+	{
+		EBoneChainType Type;
+		TArray<FString> Substrings;
+	};
+
+	const TArray<FChainPattern> DefaultPatterns = {
+		{ EBoneChainType::Hair, { TEXT("hair"), TEXT("hairs"), TEXT("fringe"), TEXT("bang") } },
+		{ EBoneChainType::Skirt, { TEXT("skirt"), TEXT("cape"), TEXT("cloth"), TEXT("coat") } },
+		{ EBoneChainType::Tail, { TEXT("tail"), TEXT("tail_") } },
+		{ EBoneChainType::Breast, { TEXT("breast"), TEXT("butt"), TEXT("chest"), TEXT("bust") } },
+		{ EBoneChainType::Weapon, { TEXT("weapon"), TEXT("amulet"), TEXT("accessory"), TEXT("belt"), TEXT("pendant") } },
+	};
+
+	// Use custom patterns if provided, otherwise use defaults
+	TArray<FChainPattern> Patterns;
+	if (BoneChainDetectionPatterns.Num() > 0)
+	{
+		for (const auto& Pair : BoneChainDetectionPatterns)
+		{
+			FChainPattern P;
+			P.Type = EBoneChainType::Custom;
+			P.Substrings.Add(Pair.Value);
+			Patterns.Add(P);
+		}
+	}
+	else
+	{
+		Patterns = DefaultPatterns;
+	}
+
+	// Phase 1: Substring matching (case-insensitive)
+	TSet<int32> DetectedRootIndices;
+	for (const FChainPattern& Pattern : Patterns)
+	{
+		for (int32 i = 0; i < NumBones; ++i)
+		{
+			const FString BoneName = RefSkeleton.GetBoneName(i).ToString().ToLower();
+			bool bMatched = false;
+			for (const FString& Sub : Pattern.Substrings)
+			{
+				if (BoneName.Contains(Sub.ToLower()))
+				{
+					bMatched = true;
+					break;
+				}
+			}
+			if (!bMatched)
+			{
+				continue;
+			}
+
+			// Walk up to find chain root (first bone with >1 child or no parent in ModifyBones)
+			int32 RootIdx = i;
+			while (RootIdx >= 0)
+			{
+				const int32 ParentIdx = RefSkeleton.GetParentIndex(RootIdx);
+				if (ParentIdx < 0)
+				{
+					break;
+				}
+				// Check if parent has other children (branching point = chain root)
+				TArray<int32> Siblings;
+				RefSkeleton.GetDirectChildBones(ParentIdx, Siblings);
+				if (Siblings.Num() > 1)
+				{
+					break; // Parent is a branching point, current is the chain root
+				}
+				RootIdx = ParentIdx;
+			}
+
+			if (RootIdx >= 0 && !DetectedRootIndices.Contains(RootIdx))
+			{
+				DetectedRootIndices.Add(RootIdx);
+			}
+		}
+	}
+
+	// Phase 2: Topology-based fallback for unmatched chains
+	// Find long single-child chains (likely hair/tail/skirt) that weren't detected by name
+	if (DetectedRootIndices.Num() == 0)
+	{
+		for (int32 i = 0; i < NumBones; ++i)
+		{
+			if (DetectedRootIndices.Contains(i))
+			{
+				continue;
+			}
+
+			// Count chain length (single-child bones from this root)
+			int32 ChainLength = 0;
+			int32 Current = i;
+			while (Current >= 0)
+			{
+				TArray<int32> Children;
+				RefSkeleton.GetDirectChildBones(Current, Children);
+				if (Children.Num() != 1)
+				{
+					break;
+				}
+				Current = Children[0];
+				ChainLength++;
+			}
+
+			// Chains of 4+ bones are likely physics chains (hair, tail, skirt)
+			if (ChainLength >= 4)
+			{
+				DetectedRootIndices.Add(i);
+			}
+		}
+	}
+
+	// Apply character profile settings to detected chains
+	if (CharacterProfile)
+	{
+		for (const int32 RootIdx : DetectedRootIndices)
+		{
+			const FName RootBoneName = RefSkeleton.GetBoneName(RootIdx);
+			FKawaiiPhysicsChainPreset Preset;
+			if (CharacterProfile->GetChainPreset(RootBoneName, Preset))
+			{
+				for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == RootBoneName)
+					{
+						Bone.PhysicsSettings = Preset.PhysicsSettings;
+						break;
+					}
+				}
+			}
+		}
+	}
+}
+
+// Apply weapon/accessory pendulum physics
+void FAnimNode_KawaiiPhysics::ApplyWeaponPhysics()
+{
+	if (!bEnableWeaponPhysics || WeaponChainRoots.Num() == 0)
+	{
+		return;
+	}
+
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		// Check if this bone is in a weapon chain
+		bool bIsWeaponBone = false;
+		for (const FName& Root : WeaponChainRoots)
+		{
+			if (Bone.BoneRef.BoneName == Root)
+			{
+				bIsWeaponBone = true;
+				break;
+			}
+		}
+
+		if (!bIsWeaponBone)
+		{
+			continue;
+		}
+
+		// Apply pendulum physics (simplified spring-damper)
+		const FVector Velocity = Bone.Location - Bone.PrevLocation;
+		const FVector Gravity = FVector(0, 0, -980.0f) * GetStepDeltaTime();
+
+		// Pendulum restoring force (pull toward rest pose)
+		const FVector RestOffset = Bone.PoseLocation - Bone.Location;
+		const FVector SpringForce = RestOffset * WeaponPendulumStiffness;
+
+		// Damping
+		const FVector DampingForce = -Velocity * WeaponPendulumDamping;
+
+		// Apply forces
+		Bone.Location += (SpringForce + DampingForce + Gravity) * GetStepDeltaTime();
+	}
+}
+
+// Skip non-moving bones for performance optimization
+void FAnimNode_KawaiiPhysics::ApplyBoneFilter()
+{
+	if (SkipBoneNames.Num() == 0)
+	{
+		return;
+	}
+
+	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+		{
+			continue;
+		}
+
+		// Check if bone should be skipped
+		for (const FName& SkipBone : SkipBoneNames)
+		{
+			if (Bone.BoneRef.BoneName == SkipBone)
+			{
+				Bone.bSkipSimulate = true;
+				break;
+			}
+		}
 	}
 }
 
@@ -1276,7 +1600,7 @@ void FAnimNode_KawaiiPhysics::AutoGenerateCollisions(const USkeletalMeshComponen
 			{
 				FCapsuleLimit Capsule;
 				Capsule.DrivingBone.BoneName = ChainRoot;
-				Capsule.DrivingBone.Initialize(SkeletalMesh);
+				Capsule.DrivingBone.Initialize(RefSkeleton);
 				Capsule.Location = BoneLocation + BoneDir * 0.5f;
 				Capsule.Rotation = FRotationMatrix::MakeFromZ(BoneDir).ToQuat();
 				Capsule.Radius = FMath::Max(BoneLength * 0.3f, 2.0f);
@@ -1290,7 +1614,7 @@ void FAnimNode_KawaiiPhysics::AutoGenerateCollisions(const USkeletalMeshComponen
 			// Create sphere for leaf bones
 			FSphericalLimit Sphere;
 			Sphere.DrivingBone.BoneName = ChainRoot;
-			Sphere.DrivingBone.Initialize(SkeletalMesh);
+			Sphere.DrivingBone.Initialize(RefSkeleton);
 			Sphere.Location = BoneLocation;
 			Sphere.Radius = 3.0f;
 			Sphere.LimitType = ESphericalLimitType::Outer;
@@ -1349,18 +1673,33 @@ void FAnimNode_KawaiiPhysics::Simulate(FKawaiiPhysicsModifyBone& Bone, const FSc
 	{
 		// BaseBoneSpace は Output 依存の空間変換が必要なため、別関数に切り出さずここで実行。
 		// BaseBoneSpace needs Output-dependent space conversions, so it is handled inline here.
+
+		// Velocity-based inertia dampening: maps bone velocity → additional damping multiplier
+		float InertiaDampingMultiplier = 0.0f;
+		const FRichCurve* InertiaCurve = InertiaDampingVelocityCurve.GetRichCurveConst();
+		if (InertiaCurve && InertiaCurve->GetNumKeys() > 0)
+		{
+			const float BoneVelocity = (Bone.Location - Bone.PrevLocation).Size() / FMath::Max(GetStepDeltaTime(), SMALL_NUMBER);
+			const float ClampedVelocity = FMath::Clamp(BoneVelocity, 0.0f, InertiaDampingMaxVelocity);
+			InertiaDampingMultiplier = InertiaCurve->Eval(ClampedVelocity);
+		}
+
 		// Follow Translation
 		const FVector SkelCompMoveVectorBBS =
 			ConvertSimulationSpaceVector(Output, EKawaiiPhysicsSimulationSpace::ComponentSpace,
 			                             EKawaiiPhysicsSimulationSpace::BaseBoneSpace, SkelCompMoveVector);
-		Bone.Location += SkelCompMoveVectorBBS * (1.0f - Bone.PhysicsSettings.WorldDampingLocation);
+		const float EffectiveLocationDamping = FMath::Clamp(
+			Bone.PhysicsSettings.WorldDampingLocation + InertiaDampingMultiplier, 0.0f, 1.0f);
+		Bone.Location += SkelCompMoveVectorBBS * (1.0f - EffectiveLocationDamping);
 
 		// Follow Rotation
 		const FVector PrevLocationCS = PrevBaseBoneSpace2ComponentSpace.TransformPosition(Bone.PrevLocation);
 		const FVector RotatedLocationCS = SkelCompMoveRotation.RotateVector(PrevLocationCS);
 		const FVector RotatedLocationBase = ConvertSimulationSpaceLocationCached(
 			FSimulationSpaceCache(), CurrentEvalSimSpaceCache, RotatedLocationCS);
-		Bone.Location += (RotatedLocationBase - Bone.PrevLocation) * (1.0f - Bone.PhysicsSettings.WorldDampingRotation);
+		const float EffectiveRotationDamping = FMath::Clamp(
+			Bone.PhysicsSettings.WorldDampingRotation + InertiaDampingMultiplier, 0.0f, 1.0f);
+		Bone.Location += (RotatedLocationBase - Bone.PrevLocation) * (1.0f - EffectiveRotationDamping);
 	}
 	else
 	{
@@ -1458,7 +1797,10 @@ FVector FAnimNode_KawaiiPhysics::ComputeVerletStepVelocity(FKawaiiPhysicsModifyB
 	// Move using Velocity( = movement amount in pre frame ) and Damping
 	// 速度は前ステップ変位を DeltaTimeOld で割って再構成。固定サブステップ時 DeltaTimeOld=FixedDt。
 	// Velocity is reconstructed from the previous step's displacement / DeltaTimeOld (= FixedDt while substepping).
-	FVector Velocity = (Bone.Location - Bone.PrevLocation) / DeltaTimeOld;
+	FVector Velocity = (DeltaTimeOld > SMALL_NUMBER)
+		? (Bone.Location - Bone.PrevLocation) / DeltaTimeOld
+		: FVector::ZeroVector;
+	Bone.PrevPrevLocation = Bone.PrevLocation;
 	Bone.PrevLocation = Bone.Location;
 
 	// 毎ステップ生の damping 係数（固定サブステップ化でフレームレート依存は解消済み）。
@@ -1509,15 +1851,29 @@ void FAnimNode_KawaiiPhysics::ApplyWorldMoveFollowNonBaseBone(FKawaiiPhysicsModi
 	if (SimulationSpace != EKawaiiPhysicsSimulationSpace::WorldSpace
 		&& TeleportType != ETeleportType::TeleportPhysics)
 	{
+		// Velocity-based inertia dampening
+		float InertiaDampingMultiplier = 0.0f;
+		const FRichCurve* InertiaCurve = InertiaDampingVelocityCurve.GetRichCurveConst();
+		if (InertiaCurve && InertiaCurve->GetNumKeys() > 0)
+		{
+			const float BoneVelocity = (Bone.Location - Bone.PrevLocation).Size() / FMath::Max(GetStepDeltaTime(), SMALL_NUMBER);
+			const float ClampedVelocity = FMath::Clamp(BoneVelocity, 0.0f, InertiaDampingMaxVelocity);
+			InertiaDampingMultiplier = InertiaCurve->Eval(ClampedVelocity);
+		}
+
 		// Predictive physics: apply predicted movement to reduce latency
 		const FVector PredictedMove = SkelCompMoveVector + SkelCompMoveVector * PredictionScale;
 
 		// Follow Translation
-		Bone.Location += PredictedMove * (1.0f - Bone.PhysicsSettings.WorldDampingLocation);
+		const float EffectiveLocationDamping = FMath::Clamp(
+			Bone.PhysicsSettings.WorldDampingLocation + InertiaDampingMultiplier, 0.0f, 1.0f);
+		Bone.Location += PredictedMove * (1.0f - EffectiveLocationDamping);
 
 		// Follow Rotation
+		const float EffectiveRotationDamping = FMath::Clamp(
+			Bone.PhysicsSettings.WorldDampingRotation + InertiaDampingMultiplier, 0.0f, 1.0f);
 		Bone.Location += (SkelCompMoveRotation.RotateVector(Bone.PrevLocation) - Bone.PrevLocation)
-			* (1.0f - Bone.PhysicsSettings.WorldDampingRotation);
+			* (1.0f - EffectiveRotationDamping);
 	}
 }
 
@@ -1613,17 +1969,18 @@ void FAnimNode_KawaiiPhysics::ApplySimulateResult(FComponentSpacePoseContext& Ou
 	}
 
 
+	TSet<int32> ProcessedParents;
 	for (int32 i = 0; i < ModifyBones.Num(); ++i)
 	{
 		FKawaiiPhysicsModifyBone& Bone = ModifyBones[i];
-		if (!Bone.HasParent())
+		if (!Bone.HasParent() || !ModifyBones.IsValidIndex(Bone.ParentIndex))
 		{
 			continue;
 		}
 
 		FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
 
-		if (ParentBone.ChildIndices.Num() <= 1)
+		if (ParentBone.ChildIndices.Num() <= 1 && !ProcessedParents.Contains(Bone.ParentIndex))
 		{
 			if (ParentBone.BoneRef.BoneIndex >= 0)
 			{
@@ -1632,6 +1989,7 @@ void FAnimNode_KawaiiPhysics::ApplySimulateResult(FComponentSpacePoseContext& Ou
 
 				if (PoseVector.GetSafeNormal() == SimulateVector.GetSafeNormal())
 				{
+					ProcessedParents.Add(Bone.ParentIndex);
 					continue;
 				}
 
@@ -1650,6 +2008,7 @@ void FAnimNode_KawaiiPhysics::ApplySimulateResult(FComponentSpacePoseContext& Ou
 					ConvertSimulationSpaceRotation(Output, SimulationSpace,
 					                               EKawaiiPhysicsSimulationSpace::ComponentSpace, SimulateRotation);
 				OutBoneTransforms[Bone.ParentIndex].Transform.SetRotation(SimulateRotation);
+				ProcessedParents.Add(Bone.ParentIndex);
 			}
 		}
 

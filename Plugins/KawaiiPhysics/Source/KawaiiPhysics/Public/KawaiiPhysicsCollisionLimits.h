@@ -310,4 +310,3 @@ struct FKawaiiPhysicsMeshCollision : public FCollisionLimitBase
 		return *this;
 	}
 };
-};

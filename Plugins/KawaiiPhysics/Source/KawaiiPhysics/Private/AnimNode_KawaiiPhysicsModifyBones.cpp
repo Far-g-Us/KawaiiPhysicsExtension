@@ -83,7 +83,9 @@ void FAnimNode_KawaiiPhysics::InitModifyBones(FComponentSpacePoseContext& Output
 	const FReferenceSkeleton& RefSkeleton = (CVarAnimNodeKawaiiPhysicsUseBoneContainerRefSkeletonWhenInit.
 		                                        GetValueOnAnyThread())
 		                                        ? BoneContainer.GetReferenceSkeleton()
-		                                        : BoneContainer.GetSkeletonAsset()->GetReferenceSkeleton();
+		                                        : (BoneContainer.GetSkeletonAsset()
+		                                           ? BoneContainer.GetSkeletonAsset()->GetReferenceSkeleton()
+		                                           : BoneContainer.GetReferenceSkeleton());
 
 	auto InitRootBone = [&](const FName& RootBoneName, const TArray<FBoneReference>& InExcludeBones)
 	{
@@ -97,7 +99,7 @@ void FAnimNode_KawaiiPhysics::InitModifyBones(FComponentSpacePoseContext& Output
 
 			for (auto& Bone : Bones)
 			{
-				if (Bone.LengthFromRoot > 0.0f)
+				if (Bone.LengthFromRoot > 0.0f && TotalBoneLength > KINDA_SMALL_NUMBER)
 				{
 					Bone.LengthRateFromRoot = Bone.LengthFromRoot / TotalBoneLength;
 				}
@@ -395,10 +397,12 @@ void FAnimNode_KawaiiPhysics::RollbackInterBoneDummyBones(TArray<FKawaiiPhysicsM
 {
 	// 子ボーンが無効（Excluded等） → 挿入済みダミーをクリーンアップ
 	// ダミーは配列末尾に連続しているため逆順で安全に削除可能
+	// Remove in reverse order; after each removal, adjust remaining stored indices
+	// since elements shift down.
 	for (int32 k = InsertedInterBoneDummyIndices.Num() - 1; k >= 0; k--)
 	{
 		const int32 DummyIdx = InsertedInterBoneDummyIndices[k];
-		if (DummyIdx == InModifyBones.Num() - 1)
+		if (DummyIdx < InModifyBones.Num())
 		{
 			InModifyBones.RemoveAt(DummyIdx);
 		}
@@ -592,6 +596,35 @@ void FAnimNode_KawaiiPhysics::UpdateSkelCompMove(FComponentSpacePoseContext& Out
 	{
 		TeleportType = ETeleportType::TeleportPhysics;
 	}
+
+	// Auto-prediction boost for Motion Warping / large movements
+	if (bAutoPredictionOnLargeMovement && TeleportType != ETeleportType::TeleportPhysics)
+	{
+		const float MovementSize = SkelCompMoveVector.Size();
+		if (MovementSize > AutoPredictionMovementThreshold)
+		{
+			// Temporarily boost prediction to smooth out warp reaction
+			PredictionScale = FMath::Max(PredictionScale, AutoPredictionBoostAmount);
+		}
+	}
+
+	// Warping smoothing: dampen large component movements to prevent physics jitter
+	if (bEnableWarpingSmoothing && TeleportType != ETeleportType::TeleportPhysics)
+	{
+		const float MovementSpeed = SkelCompMoveVector.Size() / FMath::Max(FrameDeltaTime, 0.001f);
+		if (MovementSpeed > WarpingDetectionThreshold)
+		{
+			// Interpolate the movement vector toward zero to smooth the snap
+			FVector SmoothedDelta = FMath::VInterpTo(
+				FVector::ZeroVector, SkelCompMoveVector,
+				FrameDeltaTime, WarpingSmoothingSpeed
+			);
+			SkelCompMoveVector = SmoothedDelta;
+		}
+	}
+
+	// Store component location for next frame warping detection
+	PrevComponentLocation = ComponentTransform.GetLocation();
 }
 
 int32 FAnimNode_KawaiiPhysics::CalcInterBoneDummyCount(float Distance, int32 RequestedCount, float AvgRadius) const

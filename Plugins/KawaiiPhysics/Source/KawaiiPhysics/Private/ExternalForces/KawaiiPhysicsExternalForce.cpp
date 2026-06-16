@@ -37,14 +37,8 @@ void FKawaiiPhysics_ExternalForce::Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNo
 
 void FKawaiiPhysics_ExternalForce::PostApply(FAnimNode_KawaiiPhysics& Node, FComponentSpacePoseContext& PoseContext)
 {
-	if (bIsOneShot)
-	{
-		Node.ExternalForces.RemoveAll([&](FInstancedStruct& InstancedStruct)
-		{
-			const auto* ExternalForcePtr = InstancedStruct.GetMutablePtr<FKawaiiPhysics_ExternalForce>();
-			return ExternalForcePtr && ExternalForcePtr == this;
-		});
-	}
+	// One-shot forces are now removed by the caller after iteration to avoid
+	// invalidating the ExternalForces array during PostApply callbacks.
 }
 
 bool FKawaiiPhysics_ExternalForce::IsDebugEnabled(bool bInPersona)

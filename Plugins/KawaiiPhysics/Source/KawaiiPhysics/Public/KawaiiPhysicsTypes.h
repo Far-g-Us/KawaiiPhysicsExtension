@@ -310,6 +310,9 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsModifyBone
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")
 	FVector PrevLocation = FVector::ZeroVector;
 
+	/** Location two frames ago (for acceleration calculation) */
+	FVector PrevPrevLocation = FVector::ZeroVector;
+
 	/** Previous rotation of the bone */
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")
 	FQuat PrevRotation = FQuat::Identity;
@@ -325,6 +328,10 @@ struct KAWAIIPHYSICS_API FKawaiiPhysicsModifyBone
 	/** Original stiffness value (stored for pose blending) */
 	UPROPERTY()
 	float OriginalStiffness = 0.0f;
+
+	/** Whether original values have been stored */
+	UPROPERTY()
+	bool bOriginalValuesStored = false;
 
 	/** Pose location of the bone */
 	UPROPERTY(BlueprintReadOnly, Category = "KawaiiPhysics|ModifyBone")

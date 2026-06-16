@@ -36,7 +36,7 @@ struct KAWAIIPHYSICS_API FKawaiiPhysics_ExternalForce_Vortex : public FKawaiiPhy
 	float Lift = 0.0f;
 
 	virtual void Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node,
-	                   FComponentSpacePoseContext& PoseContext) override
+	                   FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM = FTransform::Identity) override
 	{
 		if (!bIsEnabled) return;
 
@@ -84,7 +84,7 @@ struct KAWAIIPHYSICS_API FKawaiiPhysics_ExternalForce_Radial : public FKawaiiPhy
 	float UpwardBias = 0.0f;
 
 	virtual void Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node,
-	                   FComponentSpacePoseContext& PoseContext) override
+	                   FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM = FTransform::Identity) override
 	{
 		if (!bIsEnabled) return;
 
@@ -136,7 +136,7 @@ struct KAWAIIPHYSICS_API FKawaiiPhysics_ExternalForce_Turbulence : public FKawai
 	float TimeOffset = 0.0f;
 
 	virtual void Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNode_KawaiiPhysics& Node,
-	                   FComponentSpacePoseContext& PoseContext) override
+	                   FComponentSpacePoseContext& PoseContext, const FTransform& BoneTM = FTransform::Identity) override
 	{
 		if (!bIsEnabled) return;
 

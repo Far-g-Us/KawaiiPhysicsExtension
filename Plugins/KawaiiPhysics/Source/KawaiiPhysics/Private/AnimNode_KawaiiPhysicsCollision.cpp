@@ -635,9 +635,23 @@ void FAnimNode_KawaiiPhysics::AdjustByAngleLimit(
 		const FVector Up = FVector::CrossProduct(Right, Forward).GetSafeNormal();
 
 		// Decompose the rotation from pose to current into twist + swing
-		const FQuat PoseQuat = FRotationMakeFromXZ(Forward, Up);
-		const FQuat CurrentQuat = FRotationMakeFromXZ(BoneDir, 
-			FVector::CrossProduct(FVector::CrossProduct(BoneDir, Right), BoneDir).GetSafeNormal());
+		const FQuat PoseQuat = FRotationMatrix::MakeFromXZ(Forward, Up).ToQuat();
+		const FVector Cross1 = FVector::CrossProduct(BoneDir, Right);
+		FVector CurrentUp;
+		if (Cross1.IsNearlyZero())
+		{
+			// BoneDir is nearly parallel to Right — use Up from the pose frame directly
+			CurrentUp = Up;
+		}
+		else
+		{
+			CurrentUp = FVector::CrossProduct(Cross1, BoneDir).GetSafeNormal();
+			if (CurrentUp.IsNearlyZero())
+			{
+				CurrentUp = Up;
+			}
+		}
+		const FQuat CurrentQuat = FRotationMatrix::MakeFromXZ(BoneDir, CurrentUp).ToQuat();
 		const FQuat DeltaQuat = PoseQuat.Inverse() * CurrentQuat;
 
 		// Convert to axis-angle
@@ -735,22 +749,22 @@ void FAnimNode_KawaiiPhysics::AdjustByPlanarConstraint(FKawaiiPhysicsModifyBone&
 {
 	if (PlanarConstraint != EPlanarConstraint::None)
 	{
-		FPlane Plane;
+		FVector PlaneNormal;
 		switch (PlanarConstraint)
 		{
 		case EPlanarConstraint::X:
-			Plane = FPlane(ParentBone.Location, ParentBone.PoseRotation.GetAxisX());
+			PlaneNormal = ParentBone.PoseRotation.GetAxisX();
 			break;
 		case EPlanarConstraint::Y:
-			Plane = FPlane(ParentBone.Location, ParentBone.PoseRotation.GetAxisY());
+			PlaneNormal = ParentBone.PoseRotation.GetAxisY();
 			break;
 		case EPlanarConstraint::Z:
-			Plane = FPlane(ParentBone.Location, ParentBone.PoseRotation.GetAxisZ());
+			PlaneNormal = ParentBone.PoseRotation.GetAxisZ();
 			break;
-		case EPlanarConstraint::None:
-			break;
-		default: ;
+		default:
+			return;
 		}
+		FPlane Plane(ParentBone.Location, PlaneNormal);
 		Bone.Location = FVector::PointPlaneProject(Bone.Location, Plane);
 	}
 }
@@ -801,9 +815,18 @@ void FAnimNode_KawaiiPhysics::AdjustByBoneConstraints()
 
 		// XBPD
 		float Constraint = DeltaLength - BoneConstraint.Length;
-		float Compliance = XPBDComplianceValues[static_cast<int32>(ComplianceType)];
+		const int32 ComplianceIndex = static_cast<int32>(ComplianceType);
+		float Compliance = (ComplianceIndex >= 0 && ComplianceIndex < XPBDComplianceValues.Num())
+			? XPBDComplianceValues[ComplianceIndex] : 0.001f;
 		const float StepDt = GetStepDeltaTime();
-		Compliance /= StepDt * StepDt;
+		if (StepDt > SMALL_NUMBER)
+		{
+			Compliance /= (StepDt * StepDt);
+		}
+		else
+		{
+			Compliance = 0.001f;
+		}
 		float DeltaLambda = (Constraint - Compliance * BoneConstraint.Lambda) / (2 + Compliance); // 2 = SumMass
 		Delta = (Delta / DeltaLength) * DeltaLambda;
 
@@ -1209,6 +1232,10 @@ void FAnimNode_KawaiiPhysics::UpdateSharedCollisionLimits(
 }
 
 // Mesh-based collision using Chaos Physics (GJK/EPA)
+// Mesh-based collision using simplified convex hull approach.
+// For each bone: find closest point on hull, compute face normal, push out if inside.
+// This is NOT a triangle mesh sweep — it uses pre-computed convex hull vertices
+// and checks against each edge's plane. Performance: O(n * h) where n = bones, h = hull vertices.
 void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bone,
                                                      TArray<FKawaiiPhysicsMeshCollision>& Collisions,
                                                      FComponentSpacePoseContext& Output)
@@ -1334,14 +1361,30 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 		bool bInsideHull = true;
 		FVector CollisionNormal = FVector::ZeroVector;
 
-		// Check against each face of the convex hull (use nearby vertices as potential faces)
+		// Compute centroid of hull for face normal estimation
+		FVector Centroid = FVector::ZeroVector;
+		for (const FVector& V : HullVertices)
+		{
+			Centroid += V;
+		}
+		if (HullVertices.Num() > 0)
+		{
+			Centroid /= HullVertices.Num();
+		}
+
+		// Check against each face of the convex hull
+		// For a convex hull boundary, use the centroid-to-vertex direction as face normal
 		for (int32 i = 0; i < HullVertices.Num() && bInsideHull; ++i)
 		{
 			const FVector& A = HullVertices[i];
 			const FVector& B = HullVertices[(i + 1) % HullVertices.Num()];
-			const FVector& C = HullVertices[(i + 2) % HullVertices.Num()];
 
-			const FVector FaceNormal = FVector::CrossProduct(B - A, C - A).GetSafeNormal();
+			// Face normal: outward direction from centroid projected onto the edge plane
+			const FVector EdgeDir = (B - A).GetSafeNormal();
+			const FVector ToBone = Bone.Location - A;
+			const FVector FaceNormal = FVector::CrossProduct(EdgeDir,
+				FVector::CrossProduct(ToBone, EdgeDir).GetSafeNormal()).GetSafeNormal();
+
 			if (FaceNormal.IsNearlyZero())
 			{
 				continue;
@@ -1376,9 +1419,12 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 			{
 				const FVector& A = HullVertices[i];
 				const FVector& B = HullVertices[(i + 1) % HullVertices.Num()];
-				const FVector& C = HullVertices[(i + 2) % HullVertices.Num()];
 
-				const FVector FaceNormal = FVector::CrossProduct(B - A, C - A).GetSafeNormal();
+				const FVector EdgeDir = (B - A).GetSafeNormal();
+				const FVector ToBone = Bone.Location - A;
+				const FVector FaceNormal = FVector::CrossProduct(EdgeDir,
+					FVector::CrossProduct(ToBone, EdgeDir).GetSafeNormal()).GetSafeNormal();
+
 				if (FaceNormal.IsNearlyZero())
 				{
 					continue;

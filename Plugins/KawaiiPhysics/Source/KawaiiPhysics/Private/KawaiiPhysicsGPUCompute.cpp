@@ -29,6 +29,17 @@ bool UKawaiiPhysicsGPUCompute::Initialize(int32 NumBones)
 		return false;
 	}
 
+	// GPU sync overhead exceeds CPU benefit for small bone counts
+	// Recommend CPU simulation for < 50 bones
+	if (NumBones < 50)
+	{
+		UE_LOG(LogKawaiiPhysicsGPU, Warning,
+			TEXT("GPU simulation disabled: %d bones is below the 50-bone threshold. "
+			     "GPU sync overhead exceeds CPU benefit for small chains. Use CPU simulation."),
+			NumBones);
+		return false;
+	}
+
 	AllocatedBoneCount = NumBones;
 	bInitialized = true;
 

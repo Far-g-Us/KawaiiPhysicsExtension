@@ -6,6 +6,7 @@
 #include "ExternalForces/KawaiiPhysicsExternalForce.h"
 #include "KawaiiPhysicsPresetAsset.h"
 #include "KawaiiPhysicsPhysicsMaterial.h"
+#include "KawaiiPhysicsCharacterProfile.h"
 #include "KawaiiPhysicsAnimDynamicsBridge.h"
 #include "Animation/AnimNodeReference.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
@@ -46,6 +47,33 @@ struct FKawaiiPhysicsReference : public FAnimNodeReference
 	GENERATED_BODY()
 
 	using FInternalNodeType = FAnimNode_KawaiiPhysics;
+};
+
+/**
+ * Debug info for a single bone (used by GetAllBonesDebugInfo).
+ */
+USTRUCT(BlueprintType)
+struct FKawaiiPhysicsDebugInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Kawaii Physics|Debug")
+	FName BoneName;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Kawaii Physics|Debug")
+	float CurrentDamping = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Kawaii Physics|Debug")
+	float CurrentStiffness = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Kawaii Physics|Debug")
+	float VelocityMagnitude = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Kawaii Physics|Debug")
+	float AngularVelocityMagnitude = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Kawaii Physics|Debug")
+	bool bColliding = false;
 };
 
 /**
@@ -478,7 +506,7 @@ public:
 
 	// --- Runtime Parameter Control ---
 
-	/** Enable or disable physics simulation on this node */
+	/** Enable or disable physics simulation on this node (disables all physics, not just world collision) */
 	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Runtime Control", meta=(BlueprintThreadSafe))
 	static FKawaiiPhysicsReference SetPhysicsEnabled(const FKawaiiPhysicsReference& KawaiiPhysics,
 	                                                 bool bEnabled)
@@ -487,6 +515,11 @@ public:
 			TEXT("SetPhysicsEnabled"),
 			[bEnabled](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
 				InKawaiiPhysics.bAllowWorldCollision = bEnabled;
+				// Skip all simulation when disabled
+				for (FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					Bone.bSkipSimulate = !bEnabled;
+				}
 				if (!bEnabled)
 				{
 					// Reset dynamics when disabling physics
@@ -1002,6 +1035,92 @@ public:
 		return UKawaiiPhysicsAnimDynamicsBridge::GetRecommendedSettings(UseCase);
 	}
 
+	// --- Character Focus ---
+
+	/** Set character physics profile */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Character", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetCharacterProfile(
+		const FKawaiiPhysicsReference& KawaiiPhysics, UKawaiiPhysicsCharacterProfile* Profile)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetCharacterProfile"),
+			[Profile](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.CharacterProfile = Profile;
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Enable auto-detection of bone chains */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Character", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetAutoDetectBoneChains(const FKawaiiPhysicsReference& KawaiiPhysics, bool bEnable)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetAutoDetectBoneChains"),
+			[bEnable](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.bAutoDetectBoneChains = bEnable;
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Add bones to skip list */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Character", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AddSkipBones(
+		const FKawaiiPhysicsReference& KawaiiPhysics, const TArray<FName>& BoneNames)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AddSkipBones"),
+			[BoneNames](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (const FName& Name : BoneNames)
+				{
+					InKawaiiPhysics.SkipBoneNames.AddUnique(Name);
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Enable weapon/accessory pendulum physics */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Character", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetWeaponPhysics(
+		const FKawaiiPhysicsReference& KawaiiPhysics, bool bEnable, float Stiffness = 0.3f, float Damping = 0.5f)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetWeaponPhysics"),
+			[bEnable, Stiffness, Damping](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.bEnableWeaponPhysics = bEnable;
+				InKawaiiPhysics.WeaponPendulumStiffness = FMath::Clamp(Stiffness, 0.0f, 1.0f);
+				InKawaiiPhysics.WeaponPendulumDamping = FMath::Clamp(Damping, 0.0f, 1.0f);
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Add weapon chain root bones */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Character", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference AddWeaponChainRoots(
+		const FKawaiiPhysicsReference& KawaiiPhysics, const TArray<FName>& RootBones)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("AddWeaponChainRoots"),
+			[RootBones](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (const FName& Root : RootBones)
+				{
+					InKawaiiPhysics.WeaponChainRoots.AddUnique(Root);
+				}
+			});
+		return KawaiiPhysics;
+	}
+
+	/** Enable body mesh collision for cloth-to-body */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Character", meta=(BlueprintThreadSafe))
+	static FKawaiiPhysicsReference SetBodyMeshCollision(const FKawaiiPhysicsReference& KawaiiPhysics, bool bEnable)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("SetBodyMeshCollision"),
+			[bEnable](FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				InKawaiiPhysics.bUseBodyMeshForCollision = bEnable;
+			});
+		return KawaiiPhysics;
+	}
+
 	// --- Physics State Serialization ---
 
 	// --- Preset System ---
@@ -1134,6 +1253,136 @@ public:
 					}
 				}
 			});
+	}
+
+	/**
+	 * Get debug info for all bones (for UMG widget visualization).
+	 * Returns per-bone Damping, Stiffness, Velocity, AngularVelocity, and collision state.
+	 * Use in Blueprint: Create UMG widget -> Tick -> GetAllBonesDebugInfo -> Display in ListView.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Debug", meta=(BlueprintThreadSafe))
+	static TArray<FKawaiiPhysicsDebugInfo> GetAllBonesDebugInfo(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		TArray<FKawaiiPhysicsDebugInfo> Result;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetAllBonesDebugInfo"),
+			[&Result](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				// Count active collisions per bone (simplified: any collision touching the bone)
+				const int32 TotalCollisions = InKawaiiPhysics.SphericalLimits.Num()
+					+ InKawaiiPhysics.CapsuleLimits.Num()
+					+ InKawaiiPhysics.BoxLimits.Num();
+
+				for (const FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.BoneIndex.IsValid())
+					{
+						continue;
+					}
+
+					FKawaiiPhysicsDebugInfo Info;
+					Info.BoneName = Bone.BoneRef.BoneName;
+					Info.CurrentDamping = Bone.PhysicsSettings.Damping;
+					Info.CurrentStiffness = Bone.PhysicsSettings.Stiffness;
+					Info.VelocityMagnitude = (Bone.Location - Bone.PrevLocation).Size()
+						/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
+
+					// Angular velocity magnitude
+					const FQuat DeltaRot = Bone.PrevRotation.Inverse() * Bone.PoseRotation;
+					FVector Axis;
+					float Angle;
+					DeltaRot.ToAxisAndAngle(Axis, Angle);
+					Info.AngularVelocityMagnitude = FMath::Abs(Angle)
+						/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
+
+					Info.bColliding = (TotalCollisions > 0);
+					Result.Add(Info);
+				}
+			});
+		return Result;
+	}
+
+	/**
+	 * Export physics data as Animation Curves for MetaSounds integration.
+	 * Creates curves: "Kawaii_Physics_{BoneName}_Velocity" (magnitude) and
+	 * "Kawaii_Physics_{BoneName}_Acceleration" for each non-dummy bone.
+	 * MetaSounds can read these via the Animation Curve interface.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Audio", meta=(BlueprintThreadSafe))
+	static void ExportPhysicsCurvesForAudio(const FKawaiiPhysicsReference& KawaiiPhysics)
+	{
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("ExportPhysicsCurvesForAudio"),
+			[](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				if (!InKawaiiPhysics.AnimInstanceProxy)
+				{
+					return;
+				}
+				for (const FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.BoneIndex.IsValid())
+					{
+						continue;
+					}
+					const float Velocity = (Bone.Location - Bone.PrevLocation).Size()
+						/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
+					const FName VelocityCurveName = *FString::Printf(
+						TEXT("Kawaii_Physics_%s_Velocity"), *Bone.BoneRef.BoneName.ToString());
+					const_cast<FAnimInstanceProxy*>(InKawaiiPhysics.AnimInstanceProxy)
+						->SetCurveValue(VelocityCurveName, Velocity);
+				}
+			});
+	}
+
+	/**
+	 * Get velocity magnitude of a specific bone (cm/s).
+	 * Use in Blueprint: Tick -> GetBoneVelocityMagnitude -> Set MetaSound Parameter.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Audio", meta=(BlueprintThreadSafe))
+	static float GetBoneVelocityMagnitude(const FKawaiiPhysicsReference& KawaiiPhysics, FName BoneName)
+	{
+		float Result = 0.0f;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetBoneVelocityMagnitude"),
+			[&Result, &BoneName](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (const FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						Result = (Bone.Location - Bone.PrevLocation).Size()
+							/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
+						break;
+					}
+				}
+			});
+		return Result;
+	}
+
+	/**
+	 * Get acceleration magnitude of a specific bone (cm/s²).
+	 * Use in Blueprint: Tick -> GetBoneAcceleration -> Set MetaSound Parameter.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Audio", meta=(BlueprintThreadSafe))
+	static float GetBoneAcceleration(const FKawaiiPhysicsReference& KawaiiPhysics, FName BoneName)
+	{
+		float Result = 0.0f;
+		KawaiiPhysics.CallAnimNodeFunction<FAnimNode_KawaiiPhysics>(
+			TEXT("GetBoneAcceleration"),
+			[&Result, &BoneName](const FAnimNode_KawaiiPhysics& InKawaiiPhysics) {
+				for (const FKawaiiPhysicsModifyBone& Bone : InKawaiiPhysics.ModifyBones)
+				{
+					if (Bone.BoneRef.BoneName == BoneName)
+					{
+						const FVector Velocity = (Bone.Location - Bone.PrevLocation)
+							/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
+						const FVector PrevVelocity = (Bone.PrevLocation - Bone.PrevPrevLocation)
+							/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
+						Result = (Velocity - PrevVelocity).Size()
+							/ FMath::Max(InKawaiiPhysics.DeltaTime, 0.001f);
+						break;
+					}
+				}
+			});
+		return Result;
 	}
 
 	// --- Runtime Collision Primitives ---

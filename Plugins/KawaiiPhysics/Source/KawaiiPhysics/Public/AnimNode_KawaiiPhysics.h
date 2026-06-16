@@ -27,6 +27,7 @@
 #include "KawaiiPhysicsTypes.h"
 #include "KawaiiPhysicsBoneConstraintTypes.h"
 #include "KawaiiPhysicsPhysicsMaterial.h"
+#include "KawaiiPhysicsCharacterProfile.h"
 #include "AnimNode_KawaiiPhysics.generated.h"
 
 class UKawaiiPhysics_CustomExternalForce;
@@ -34,11 +35,12 @@ class UKawaiiPhysicsLimitsDataAsset;
 class UKawaiiPhysicsBoneConstraintsDataAsset;
 class UKawaiiPhysicsGPUCompute;
 class UKawaiiPhysicsPresetAsset;
+class UKawaiiPhysicsAnimDynamicsBridge;
 
 #if ENABLE_ANIM_DEBUG
 extern KAWAIIPHYSICS_API TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsEnable;
 extern KAWAIIPHYSICS_API TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsDebug;
-extern KAWAIIPHYSICS_API TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsDebugLengthRate;
+extern KAWAIIPHYSICS_API TAutoConsoleVariable<float> CVarAnimNodeKawaiiPhysicsDebugLengthRate;
 extern KAWAIIPHYSICS_API TAutoConsoleVariable<float> CVarAnimNodeKawaiiPhysicsDebugDrawThickness;
 #endif
 
@@ -48,6 +50,26 @@ USTRUCT(BlueprintType)
 struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalControlBase
 {
 	GENERATED_USTRUCT_BODY()
+
+	/** 
+	* Опциональный второй вход: поза после IK.
+	* Если bUsePostIKPose = true, KawaiiPhysics берёт позу из этого пина вместо стандартного ComponentPose.
+	* В AnimGraph: подключите результат IK ноды в этот пин.
+	* Optional second input: pose after IK.
+	* If bUsePostIKPose = true, KawaiiPhysics uses this pose instead of the standard ComponentPose.
+	* In AnimGraph: connect the IK node output to this pin.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Links")
+	FComponentSpacePoseLink PostIKPose;
+
+	/**
+	* Использовать PostIKPose вместо стандартного входа.
+	* Позволяет KawaiiPhysics работать с финальной позой после IK.
+	* Use PostIKPose instead of default input.
+	* Allows KawaiiPhysics to work with the final pose after IK.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Links")
+	bool bUsePostIKPose = false;
 
 	/** 
 	* 指定ボーンとそれ以下のボーンを制御対象に
@@ -213,6 +235,85 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings",
 		meta = (PinHiddenByDefault, ClampMin = "0.0", ClampMax = "5.0"))
 	float PredictionScale = 0.0f;
+
+	/**
+	* Auto-prediction boost when large movement is detected (Motion Warping, Teleport).
+	* When the component moves more than AutoPredictionMovementThreshold in one frame,
+	* PredictionScale is temporarily increased by AutoPredictionBoostAmount.
+	* This smooths physics reaction to warps and teleports without manual tweaking.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Auto Prediction",
+		meta = (PinHiddenByDefault))
+	bool bAutoPredictionOnLargeMovement = false;
+
+	/**
+	* Movement threshold (cm) to trigger auto-prediction boost.
+	* If component moves more than this in one frame, prediction is temporarily increased.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Auto Prediction",
+		meta = (PinHiddenByDefault, ClampMin = "50", EditCondition = "bAutoPredictionOnLargeMovement"))
+	float AutoPredictionMovementThreshold = 300.0f;
+
+	/**
+	* Amount to increase PredictionScale when large movement is detected.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Auto Prediction",
+		meta = (PinHiddenByDefault, ClampMin = "0.1", ClampMax = "5.0", EditCondition = "bAutoPredictionOnLargeMovement"))
+	float AutoPredictionBoostAmount = 1.0f;
+
+	/**
+	* Deterministic mode for networked multiplayer.
+	* When enabled, simulation uses fixed timestep and deterministic math to produce
+	* identical results on all clients given the same input pose and delta time.
+	* Requires bUseFixedSubstepping = true (automatically enabled).
+	* NOTE: This only ensures KawaiiPhysics determinism — other AnimNodes may differ.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Network",
+		meta = (PinHiddenByDefault))
+	bool bDeterministicMode = false;
+
+	/**
+	* Fixed timestep for deterministic mode (in seconds).
+	* Smaller = more accurate but more expensive. Default = 1/60.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Network",
+		meta = (PinHiddenByDefault, ClampMin = "0.005", ClampMax = "0.05",
+			EditCondition = "bDeterministicMode"))
+	float DeterministicFixedDt = 1.0f / 60.0f;
+
+	/** Accumulator for fixed-timestep sub-stepping (internal, do not set) */
+	float SimulationTimeAccumulator = 0.0f;
+
+	/**
+	* Сглаживать резкие движения (Motion Warping/Teleport).
+	* При обнаружении аномально большого перемещения — плавно интерполирует вместо мгновенного скачка.
+	* Smooth large movements (Motion Warping/Teleport).
+	* When anomalously large movement is detected — smoothly interpolates instead of instant snap.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Warping",
+		meta = (PinHiddenByDefault))
+	bool bEnableWarpingSmoothing = false;
+
+	/**
+	* Порог скорости (cm/s) для детекции резкого движения.
+	* Movement speed threshold (cm/s) to detect large movements.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Warping",
+		meta = (PinHiddenByDefault, ClampMin = "100", ClampMax = "5000",
+			EditCondition = "bEnableWarpingSmoothing"))
+	float WarpingDetectionThreshold = 1000.0f;
+
+	/**
+	* Скорость сглаживания при резком движении (чем больше — тем быстрее).
+	* Smoothing speed for large movements (higher = faster convergence).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Warping",
+		meta = (PinHiddenByDefault, ClampMin = "1", ClampMax = "50",
+			EditCondition = "bEnableWarpingSmoothing"))
+	float WarpingSmoothingSpeed = 10.0f;
+
+	/** Previous frame component location for warping detection (internal) */
+	FVector PrevComponentLocation = FVector::ZeroVector;
 
 	/** 
  	* 各ボーンの物理パラメータを毎フレーム更新するフラグ。
@@ -454,7 +555,87 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 		meta = (PinHiddenByDefault))
 	TObjectPtr<UKawaiiPhysicsPhysicsMaterial> PhysicsMaterial = nullptr;
 
-	// --- 距離ベースLODを有効にする。カメラとの距離に応じて自動的にシミュレーション品質を下げる。
+	/**
+	* Per-bone material overrides that take priority over the global PhysicsMaterial.
+	* Key = bone name, Value = physics settings override for that specific bone.
+	* Use for cases where individual bones need different behavior (e.g., metal armor vs cloth).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Material",
+		meta = (PinHiddenByDefault))
+	TMap<FName, FKawaiiPhysicsSettings> PerBoneMaterialOverrides;
+
+	// --- Character Focus ---
+
+	/**
+	* Character Physics Profile — complete physics setup for a character.
+	* Contains presets for all bone chains, body collisions, and weapon physics.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (PinHiddenByDefault))
+	TObjectPtr<UKawaiiPhysicsCharacterProfile> CharacterProfile = nullptr;
+
+	/**
+	* Auto-detect bone chains from skeleton (hair, skirt, tail, breast).
+	* When enabled, automatically creates collision primitives and physics settings.
+	* Uses substring matching (case-insensitive) and topology-based fallback.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (PinHiddenByDefault))
+	bool bAutoDetectBoneChains = false;
+
+	/**
+	* Custom bone name substrings for auto-detection.
+	* Key = chain type name (Hair, Skirt, Tail, Breast, Weapon), Value = array of substrings to match.
+	* If empty, uses built-in defaults. Case-insensitive matching.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (PinHiddenByDefault, EditCondition = "bAutoDetectBoneChains"))
+	TMap<FName, FString> BoneChainDetectionPatterns;
+
+	/**
+	* Bones to skip (non-moving bones like spine, pelvis).
+	* Improves performance by skipping bones that don't need physics.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character")
+	TArray<FName> SkipBoneNames;
+
+	/**
+	* Use body mesh for auto-collision (cloth-to-body).
+	* When enabled, clothing chains automatically collide with body mesh.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (PinHiddenByDefault))
+	bool bUseBodyMeshForCollision = false;
+
+	/**
+	* Weapon/Accessory physics mode (pendulum-like for hanging items).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (PinHiddenByDefault))
+	bool bEnableWeaponPhysics = false;
+
+	/**
+	* Weapon chain root bones (e.g., weapon_01, amulet_01).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (EditCondition = "bEnableWeaponPhysics", PinHiddenByDefault))
+	TArray<FName> WeaponChainRoots;
+
+	/**
+	* Weapon pendulum stiffness (higher = more rigid).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (ClampMin = "0", ClampMax = "1", EditCondition = "bEnableWeaponPhysics", PinHiddenByDefault))
+	float WeaponPendulumStiffness = 0.3f;
+
+	/**
+	* Weapon pendulum damping (higher = less swing).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Character",
+		meta = (ClampMin = "0", ClampMax = "1", EditCondition = "bEnableWeaponPhysics", PinHiddenByDefault))
+	float WeaponPendulumDamping = 0.5f;
+
+	/**
 	* Enable distance-based LOD. Automatically reduces simulation quality based on camera distance.
 	*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
@@ -484,6 +665,24 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
 		meta = (PinHiddenByDefault, EditCondition = "bEnableDistanceLOD"))
 	bool bForceComponentSpaceAtFarLOD = true;
+
+	/**
+	* Completely disable physics at extreme distances (crowd optimization).
+	* When enabled, bones are not simulated at all beyond DistanceLODDisablePhysicsAt distance.
+	* Characters use pure animation pose — zero CPU cost for physics.
+	* Useful for NPC crowds with 50+ characters on screen.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
+		meta = (PinHiddenByDefault, EditCondition = "bEnableDistanceLOD"))
+	bool bDisablePhysicsAtFarLOD = false;
+
+	/**
+	* Distance at which physics is completely disabled (requires bDisablePhysicsAtFarLOD).
+	* Beyond this distance, all bones use animation pose with zero physics cost.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Distance LOD",
+		meta = (PinHiddenByDefault, ClampMin = "1000", EditCondition = "bEnableDistanceLOD && bDisablePhysicsAtFarLOD"))
+	float DistanceLODDisablePhysicsAt = 8000.0f;
 
 	/** 
 	* 各ボーンに適用するPhysics Settings/ Damping パラメータを補正。
@@ -528,6 +727,25 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings", AdvancedDisplay,
 		meta = (PinHiddenByDefault, DisplayName = "World Damping Rotation Rate by Bone Length Rate"))
 	FRuntimeFloatCurve WorldDampingRotationCurveData;
+
+	/**
+	* Velocity-based inertia dampening curve.
+	* Maps bone velocity (cm/s) → additional WorldDamping multiplier (0-1).
+	* Example: slow movement (walking) = 0 (smooth follow), fast movement (running) = 0.3 (noticeable lag),
+	* very fast (teleport/dash) = 0.8 (ignores sudden jumps).
+	* Applied on top of base WorldDampingLocation/Rotation values.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Inertia Damping",
+		meta = (PinHiddenByDefault))
+	FRuntimeFloatCurve InertiaDampingVelocityCurve;
+
+	/**
+	* Maximum velocity (cm/s) for the inertia damping curve evaluation.
+	* Velocities above this are clamped to the curve's maximum input.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Inertia Damping",
+		meta = (PinHiddenByDefault, ClampMin = "100", ClampMax = "10000"))
+	float InertiaDampingMaxVelocity = 2000.0f;
 
 	/** 
 	* 各ボーンに適用するPhysics Settings/ CollisionRadius パラメータを補正。
@@ -903,6 +1121,24 @@ struct KAWAIIPHYSICS_API FAnimNode_KawaiiPhysics : public FAnimNode_SkeletalCont
 	*/
 	UPROPERTY()
 	TMap<int32, float> SpringVolumeVelocities;
+
+	/**
+	* Distance-LOD alpha cache (0 = full quality, 1 = minimum quality).
+	* Computed per-frame; used to apply LOD multipliers without corrupting Bone.PhysicsSettings.
+	*/
+	float CurrentDistanceLODAlpha = 0.0f;
+
+	/**
+	* Cached original values before distance-LOD modification, to restore after simulation.
+	* Avoids permanent corruption of Bone.PhysicsSettings each frame.
+	*/
+	TArray<float> CachedLODDamping;
+	TArray<float> CachedLODStiffness;
+	TArray<float> CachedLODLimitAngle;
+	bool bCachedAllowWorldCollision = true;
+	int32 CachedBeforeConstraintIterations = 0;
+	int32 CachedAfterConstraintIterations = 0;
+	EKawaiiPhysicsSimulationSpace CachedSimulationSpace = EKawaiiPhysicsSimulationSpace::WorldSpace;
 
 	/**
 	* Detected pose for pose-based blending (Standing/Sitting/Lying).
@@ -1464,6 +1700,21 @@ protected:
 	void ApplyRagdollBlend();
 
 	/**
+	 * Auto-detect bone chains from skeleton (hair, skirt, tail, breast).
+	 */
+	void AutoDetectBoneChains(const USkeletalMeshComponent* SkelComp);
+
+	/**
+	 * Apply weapon/accessory pendulum physics.
+	 */
+	void ApplyWeaponPhysics();
+
+	/**
+	 * Skip non-moving bones for performance optimization.
+	 */
+	void ApplyBoneFilter();
+
+	/**
 	 * Auto-generate collision primitives from skeletal mesh bounds.
 	 *
 	 * @param SkelComp The skeletal mesh component.
@@ -1615,6 +1866,12 @@ protected:
 	                      const FVector& Extent, const FColor& Color, float Thickness) const;
 #endif
 
+	/**
+	* Runtime debug overlay — draws bone lines and collision spheres in packaged builds.
+	* Enabled via console command: kawaiiphysics.RuntimeDebug 1
+	* Uses DrawDebug* functions which work in all build configurations.
+	*/
+	void RuntimeDebugDraw(const USkeletalMeshComponent* SkelComp) const;
 
 private:
 	bool bModifyBonesNeedsReinit = false;

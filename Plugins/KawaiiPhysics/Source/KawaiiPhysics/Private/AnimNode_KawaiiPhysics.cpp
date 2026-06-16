@@ -31,6 +31,7 @@
 
 #include "KawaiiPhysics.h"
 #include "AnimNode_KawaiiPhysicsInternal.h"
+#include "DrawDebugHelpers.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_KawaiiPhysics)
 
@@ -42,11 +43,20 @@ TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsDebug(
 TAutoConsoleVariable<float> CVarAnimNodeKawaiiPhysicsDebugDrawThickness(
 	TEXT("a.AnimNode.KawaiiPhysics.DebugDrawThickness"), 1.0f,
 	TEXT("Override debug draw thickness used by KawaiiPhysics (<=0 uses per-call thickness)."));
+TAutoConsoleVariable<float> CVarAnimNodeKawaiiPhysicsDebugLengthRate(
+	TEXT("a.AnimNode.KawaiiPhysics.DebugLengthRate"), 1.0f,
+	TEXT("Override debug draw length rate for KawaiiPhysics bone length visualization."));
 #endif
 
 TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsUseBoneContainerRefSkeletonWhenInit(
 	TEXT("a.AnimNode.KawaiiPhysics.UseBoneContainerRefSkeletonWhenInit"), true, TEXT(
 		"flag to revert the behavior of RefSkeleton in InitModifyBones to its previous implementation."));
+
+// Runtime debug overlay CVar (works in packaged builds)
+TAutoConsoleVariable<bool> CVarKawaiiPhysicsRuntimeDebug(
+	TEXT("a.AnimNode.KawaiiPhysics.RuntimeDebug"), false,
+	TEXT("Enable runtime debug overlay for KawaiiPhysics (bone lines + collision spheres). "
+	     "Works in packaged builds. Use with DrawDebug* functions."));
 
 // SharedCollision CVars
 TAutoConsoleVariable<int32> CVarSharedCollisionReadMaxAge(
@@ -162,6 +172,7 @@ void FAnimNode_KawaiiPhysics::Initialize_AnyThread(const FAnimationInitializeCon
 
 	ModifyBones.Empty();
 	OriginalChainLengths.Empty();
+	SpringVolumeVelocities.Empty();
 
 	// For Avoiding Zero Divide in the first frame
 	DeltaTimeOld = 1.0f / static_cast<float>(GetEffectiveTargetFramerate());
@@ -502,6 +513,14 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 
 	check(OutBoneTransforms.Num() == 0);
 
+	// IK Feedback Loop: use PostIKPose if enabled
+	if (bUsePostIKPose && PostIKPose.IsConnected())
+	{
+		FComponentSpacePoseContext PostIKOutput(Output.AnimInstanceProxy);
+		PostIKPose.Evaluate(PostIKOutput);
+		Output.Pose = PostIKOutput.Pose;
+	}
+
 	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
 	FTransform ComponentTransform = Output.AnimInstanceProxy->GetComponentTransform();
 
@@ -552,6 +571,8 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 		 !FMath::IsNearlyEqual(LastInitializedDummyBoneLength, DummyBoneLength)))
 	{
 		ModifyBones.Empty(ModifyBones.Num());
+		OriginalChainLengths.Empty();
+		SpringVolumeVelocities.Empty();
 		bInitPhysicsSettings = false;
 		bModifyBonesNeedsReinit = false;
 	}
@@ -649,6 +670,14 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 					return;
 				}
 
+				// Save original values before LOD overrides (restored after simulation)
+				CachedAllowWorldCollision = bAllowWorldCollision;
+				CachedBeforeConstraintIterations = BoneConstraintIterationCountBeforeCollision;
+				CachedAfterConstraintIterations = BoneConstraintIterationCountAfterCollision;
+
+				// Re-apply base physics settings first to clear any stale LOD overrides from previous frames
+				UpdatePhysicsSettingsOfModifyBones();
+
 				// Apply LOD overrides to modify bones
 				for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
 				{
@@ -683,6 +712,9 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 	}
 
 	// Distance-based LOD: automatically reduce quality by camera distance
+	// NOTE: We save original values and restore them after simulation to avoid
+	// permanently corrupting Bone.PhysicsSettings each frame.
+	CurrentDistanceLODAlpha = 0.0f;
 	if (bEnableDistanceLOD)
 	{
 		const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
@@ -698,9 +730,25 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 					(Distance - DistanceLODStart) / FMath::Max(DistanceLODEnd - DistanceLODStart, 1.0f),
 					0.0f, 1.0f);
 
+				CurrentDistanceLODAlpha = Alpha;
+
+				// Save original values before modification
+				CachedLODDamping.SetNum(ModifyBones.Num());
+				CachedLODStiffness.SetNum(ModifyBones.Num());
+				CachedLODLimitAngle.SetNum(ModifyBones.Num());
+				CachedAllowWorldCollision = bAllowWorldCollision;
+				CachedBeforeConstraintIterations = BoneConstraintIterationCountBeforeCollision;
+				CachedAfterConstraintIterations = BoneConstraintIterationCountAfterCollision;
+				CachedSimulationSpace = SimulationSpace;
+
 				// Reduce simulation quality based on distance
-				for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+				for (int32 i = 0; i < ModifyBones.Num(); ++i)
 				{
+					FKawaiiPhysicsModifyBone& Bone = ModifyBones[i];
+					CachedLODDamping[i] = Bone.PhysicsSettings.Damping;
+					CachedLODStiffness[i] = Bone.PhysicsSettings.Stiffness;
+					CachedLODLimitAngle[i] = Bone.PhysicsSettings.LimitAngle;
+
 					// Increase damping (more stable, less wobble)
 					Bone.PhysicsSettings.Damping = FMath::Lerp(Bone.PhysicsSettings.Damping, 0.95f, Alpha);
 					// Increase stiffness (pull towards pose more)
@@ -731,6 +779,17 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 				{
 					SimulationSpace = EKawaiiPhysicsSimulationSpace::ComponentSpace;
 				}
+			}
+
+			// Crowd optimization: completely disable physics at extreme distances
+			if (bDisablePhysicsAtFarLOD && Distance > DistanceLODDisablePhysicsAt)
+			{
+				// Skip all physics — bones stay at animation pose
+				for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+				{
+					Bone.bSkipSimulate = true;
+				}
+				return;
 			}
 		}
 	}
@@ -796,6 +855,7 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 			FVector PrevLocationCS = PreSkelCompTransform.InverseTransformPosition(Bone.PrevLocation);
 			Bone.Location = ConvertSimulationSpaceLocation(Output, EKawaiiPhysicsSimulationSpace::ComponentSpace,
 			                                               SimulationSpace, PrevLocationCS);
+			Bone.PrevPrevLocation = Bone.PrevLocation;
 			Bone.PrevLocation = Bone.Location;
 		}
 
@@ -817,6 +877,29 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 
 	ApplySimulateResult(Output, BoneContainer, OutBoneTransforms);
 
+	// Restore original values corrupted by LOD overrides (both LOD Settings and Distance-LOD paths)
+	if (CurrentDistanceLODAlpha > 0.0f)
+	{
+		for (int32 i = 0; i < ModifyBones.Num() && i < CachedLODDamping.Num(); ++i)
+		{
+			ModifyBones[i].PhysicsSettings.Damping = CachedLODDamping[i];
+			ModifyBones[i].PhysicsSettings.Stiffness = CachedLODStiffness[i];
+			ModifyBones[i].PhysicsSettings.LimitAngle = CachedLODLimitAngle[i];
+		}
+		bAllowWorldCollision = CachedAllowWorldCollision;
+		BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
+		BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
+		SimulationSpace = CachedSimulationSpace;
+		CurrentDistanceLODAlpha = 0.0f;
+	}
+	else if (bEnableLODSettings)
+	{
+		// LOD Settings path may have modified these; restore originals
+		bAllowWorldCollision = CachedAllowWorldCollision;
+		BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
+		BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
+	}
+
 	TeleportType = ETeleportType::None;
 	PreSkelCompTransform = ComponentTransform;
 
@@ -826,9 +909,91 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 
 #endif
 
+	// Runtime debug overlay (works in packaged builds via console command)
+	if (CVarKawaiiPhysicsRuntimeDebug.GetValueOnAnyThread())
+	{
+		const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
+		if (SkelComp)
+		{
+			RuntimeDebugDraw(SkelComp);
+		}
+	}
+
 #if WITH_EDITORONLY_DATA
 	LastEvaluatedTime = FPlatformTime::Seconds();
 #endif
+}
+
+// Runtime debug overlay — draws bone lines and collision spheres in packaged builds
+// Enabled via console command: a.AnimNode.KawaiiPhysics.RuntimeDebug 1
+void FAnimNode_KawaiiPhysics::RuntimeDebugDraw(const USkeletalMeshComponent* SkelComp) const
+{
+	if (!SkelComp || ModifyBones.Num() == 0)
+	{
+		return;
+	}
+
+	const UWorld* World = SkelComp->GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const float Duration = 0.0f; // Single frame
+	const float Thickness = 2.0f;
+
+	// Draw bone lines (white = normal, yellow = skipped)
+	for (const FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+	{
+		if (Bone.bDummy || Bone.bBridgeDummy || !Bone.BoneRef.BoneIndex.IsValid())
+		{
+			continue;
+		}
+
+		const FVector BoneLocation = SkelComp->GetBoneTransform(Bone.BoneRef.BoneIndex).GetLocation();
+
+		if (Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
+		{
+			const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
+			if (ParentBone.BoneRef.BoneIndex.IsValid())
+			{
+				const FVector ParentLocation = SkelComp->GetBoneTransform(ParentBone.BoneRef.BoneIndex).GetLocation();
+				const FColor LineColor = Bone.bSkipSimulate ? FColor::Yellow : FColor::White;
+				DrawDebugLine(World, ParentLocation, BoneLocation, LineColor, false, Duration, 0, Thickness);
+			}
+		}
+
+		// Draw collision radius (green sphere)
+		if (Bone.PhysicsSettings.Radius > 0.0f)
+		{
+			DrawDebugSphere(World, BoneLocation, Bone.PhysicsSettings.Radius, 8,
+				FColor::Green, false, Duration, 0, Thickness);
+		}
+	}
+
+	// Draw spherical limits (orange spheres)
+	for (const FSphericalLimit& Limit : SphericalLimits)
+	{
+		if (Limit.bEnable)
+		{
+			const FVector LimitLocation = SkelComp->GetBoneTransform(Limit.DrivingBone.BoneIndex).GetLocation()
+				+ Limit.Location;
+			DrawDebugSphere(World, LimitLocation, Limit.Radius, 12,
+				FColor::Orange, false, Duration, 0, Thickness);
+		}
+	}
+
+	// Draw capsule limits (blue capsules)
+	for (const FCapsuleLimit& Limit : CapsuleLimits)
+	{
+		if (Limit.bEnable)
+		{
+			const FVector LimitLocation = SkelComp->GetBoneTransform(Limit.DrivingBone.BoneIndex).GetLocation()
+				+ Limit.Location;
+			DrawDebugCapsule(World, LimitLocation, Limit.Length * 0.5f, Limit.Radius,
+				Limit.Rotation, FColor::Blue, false, Duration, 0, Thickness);
+		}
+	}
 }
 
 bool FAnimNode_KawaiiPhysics::IsValidToEvaluate(const USkeleton* Skeleton, const FBoneContainer& RequiredBones)

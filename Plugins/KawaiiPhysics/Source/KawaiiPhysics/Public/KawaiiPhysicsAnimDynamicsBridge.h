@@ -65,15 +65,29 @@ public:
 			return false;
 		}
 
-		// Check for AnimDynamics node in anim instance
 		UAnimInstance* AnimInstance = SkelComp->GetAnimInstance();
 		if (!AnimInstance)
 		{
 			return false;
 		}
 
-		// Simple check: if bone has AnimDynamics, it will have specific properties
-		// This is a simplified check - full migration would need anim graph analysis
+		TArray<UAnimInstance*> LinkedInstances;
+		AnimInstance->GetLinkedAnimInstances(LinkedInstances);
+
+		for (UAnimInstance* LinkedInstance : LinkedInstances)
+		{
+			if (!LinkedInstance)
+			{
+				continue;
+			}
+
+			const UClass* InstanceClass = LinkedInstance->GetClass();
+			if (InstanceClass && InstanceClass->FindPropertyByName(FName("AnimDynamics")))
+			{
+				return true;
+			}
+		}
+
 		return false;
 	}
 
