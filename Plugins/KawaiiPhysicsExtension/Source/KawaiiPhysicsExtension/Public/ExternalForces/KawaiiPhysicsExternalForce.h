@@ -115,8 +115,8 @@ protected:
 	UPROPERTY()
 	FVector Force = FVector::Zero();
 
-	/** Transform of the component */
-	UPROPERTY()
+	/** Transform of the component (per-frame cache, not serialized) */
+	UPROPERTY(Transient)
 	FTransform ComponentTransform;
 
 	/** Whether the force space can be selected */

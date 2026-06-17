@@ -20,11 +20,28 @@ Fork of [KawaiiPhysics](https://github.com/pafuhana1213/KawaiiPhysics) for **Unr
 - `GRHISupportsComputeShaders` удалён
 - Модульные зависимости: добавлены UMG, RHI, RenderCore
 
-### Исправления багов (59 исправлений)
-- **10 критических/высоких**: PredictedMove 2x double-counting, LODSettings кэш, DrivingBone валидность, Impulse primary AnimInstance, WindZone Verlet spike
-- **8 средних**: RuntimeDebugDraw,EditMode ChildIndex bounds, RagdollBlend uninitialized rotation
-- **8 низких**: Teleport WorldSpace PrevLocation, Substep accumulator drift, Null SkelComp warnings
-- **11 дополнительных (Batch 2)**: GPU fallback gravity, Bone velocity access, и другие
+### Исправления багов (108 исправлений)
+- **Критические/высокие**: PredictedMove 2x double-counting, LODSettings кэш, DrivingBone валидность, Impulse primary AnimInstance, WindZone Verlet spike, Distance-LOD (Camera cache), Budget Allocator inverted logic, Bone Scaling not applied, Pose Gravity multipliers dead code, Self-Collision inverted distance condition
+- **Средние**: RuntimeDebugDraw, EditMode ChildIndex bounds, RagdollBlend uninitialized rotation, Magic numbers, RemoveAt(0), Wind noise, NaN from zero axis, Substep drift, FrameCount never incremented
+- **Низкие**: Teleport WorldSpace PrevLocation, Substep accumulator drift, Null SkelComp warnings, GPU fallback gravity, Log categories, deprecated arrays
+- **Race conditions (3)**: Impulse queue deferred, Collision mutex, TSharedPtr FCriticalSection
+- **API misuse (7)**: ComponentTransform Transient, FORCEINLINE, deprecated arrays, BlueprintType, int32 types, default values
+- **Batch 5 (Claude review)**: Transfer Motion SourceBone init, DT²→DT, Camera culling GetPawn→GetViewTarget, Camera culling threshold→UPROPERTY
+
+### 10 Новых фич
+
+| # | Фича | UPROPERTY | Описание |
+|---|------|-----------|----------|
+| 1 | **Heuristic Solve Order** | `bHeuristicSolveOrder` | XPBD solver: сортировка костей от листьев к корню для быстрой сходимости |
+| 2 | **Physics Sleep** | `bEnablePhysicsSleep`, `SleepVelocityThreshold`, `SleepFrameCount` | Автозаморозка симуляции при неподвижных костях (CPU экономия) |
+| 3 | **Per-Chain Sim Space** | `SimulationSpaceOverride` в ChainPreset | Разные пространства для разных цепочек (волосы=World, юбка=Component) |
+| 4 | **Collision Groups** | `CollisionLayer` на ноде + каждом primitive | Bitmask фильтрация: волосы=голова, юбка=ноги |
+| 5 | **CCD (Edge Collision)** | `bEnableCCD`, `CCDSphereRadius` | Swept sphere между кадрами. Предотвращает tunneling |
+| 6 | **Backstop Collision** | `bEnableBackstopCollision`, `BackstopRadius`, `BackstopStrength` | Per-bone hemisphere: не даёт костям провалиться в тело |
+| 7 | **Camera Culling** | `bEnableCameraFrustumCulling`, `CameraCullingDistance` | Пропуск симуляции для невидимых персонажей |
+| 8 | **Pose Warp Smoothing** | `bEnablePoseWarpSmoothing`, `PoseWarpAngleThreshold`, `PoseWarpSmoothingSpeed` | Сглаживает резкие смены анимации (hit reactions) |
+| 9 | **2.5D Anime Mode** | `bEnable2DAnimeMode`, `AnimePlaneBlend`, `AnimePlaneNormal` | Ограничение движения плоскостью для аниме-стиля |
+| 10 | **Transfer Motion** | `bEnableTransferMotion`, `TransferMotionSources[]` | Угловая скорость кости-источника → внешняя сила |
 
 ### Фокус на персонаже
 Все новые физические фичи **выключены по умолчанию** — включаются по необходимости через boolean:
@@ -72,6 +89,9 @@ KawaiiPhysicsExtension/
 │   │   │   ├── KawaiiPhysicsLibrary.h
 │   │   │   ├── KawaiiPhysicsAnimDynamicsBridge.h
 │   │   │   ├── KawaiiPhysicsGPUCompute.h
+│   │   │   ├── KawaiiPhysicsCharacterProfile.h
+│   │   │   ├── KawaiiPhysicsCollisionLimits.h
+│   │   │   ├── KawaiiPhysicsTypes.h
 │   │   │   └── ExternalForces/
 │   │   │       ├── KawaiiPhysicsExternalForce.h
 │   │   │       ├── KawaiiPhysicsExternalForce_Wind.h
@@ -106,10 +126,24 @@ KawaiiPhysicsExtension/
 ### Anim Graph Node
 **KawaiiPhysics** — основной нод в AnimGraph. Поддерживает:
 - Multiple bone chains with auto-detection
-- World / BaseBone / Component simulation space
+- World / BaseBone / Component simulation space + **Per-Chain Simulation Space**
 - LOD-aware physics (авто-отключение на дальних LOD)
 - Substepping и WarmUp для стабильности
 - Deterministic Mode (accumulator-based fixed timestep)
+
+### Physics Features
+- **Self-Collision** — столкновение костей друг с другом (Spatial Hash Grid O(n·k))
+- **External Collision** — столкновение с meshes, capsules, spheres
+- **Bone Constraints** — XPBD constraints между костями (Heuristic Solve Order)
+- **Bone Subdivision** — автоматическое добавление dummy-костей для гибкости
+- **Planar Limits** — ограничения по плоскостям
+- **Twist/Swing Limits** — ограничения вращения
+- **CCD (Edge Collision)** — swept sphere предотвращает tunneling
+- **Backstop Collision** — per-bone hemisphere предотвращает penetration в тело
+- **Collision Groups** — bitmask фильтрация по слоям
+- **Physics Sleep** — автозаморозка при неподвижных костях
+- **2.5D Anime Mode** — ограничение движения плоскостью для аниме-стиля
+- **Transfer Motion** — angular velocity кости → внешняя сила
 
 ### External Forces
 Плагинная система внешних сил:
@@ -119,15 +153,18 @@ KawaiiPhysicsExtension/
 - **Wind** — ветер с шумом и turbulence
 - **Wind Zone** — зона ветра с формой (Box/Sphere/Capsule)
 
-### Physics Features
-- **Self-Collision** — столкновение костей друг с другом
-- **External Collision** — столкновение с meshes, capsules, spheres
-- **Bone Constraints** — XPBD-.constraints между костями
-- **Bone Subdivision** — автоматическое добавление dummy-костей для гибкости
-- **Planar Limits** — ограничения по плоскостям
-- **Twist/Swing Limits** — ограничения вращения
-- **Windy** — глобальный ветер для всех нодов
-- **Presets** — наборы настроек для разных типов физики
+### Performance
+- **Camera Culling** — пропуск симуляции для невидимых персонажей
+- **Distance LOD** — снижение качества по расстоянию
+- **Budget Allocator** — rate limiting симуляции
+- **Physics Sleep** — freeze при неподвижности
+
+### Character Focus
+- **Pose Warp Smoothing** — сглаживание резких смен анимации
+- **Warping Smoothing** — сглаживание телепортов актора
+- **Pose Blending** — pose-based multipliers (gravity, damping, stiffness)
+- **Physics Material** — per-bone настройки физики
+- **Bone Scaling** — dynamic scaling костей при симуляции
 
 ### Debug & Visualization
 - Runtime debug draw: bones, collision shapes, velocity arrows
@@ -154,6 +191,11 @@ UKawaiiPhysicsLibrary::SetButtPhysics(Node, Stiffness, Damping)
 UKawaiiPhysicsLibrary::SetExternalCollisionsEnabled(Node, bool)
 UKawaiiPhysicsLibrary::AddExternalCollisionSphere(Node, BoneName, Radius, Offset)
 UKawaiiPhysicsLibrary::SetSelfCollisionEnabled(Node, bool)
+
+// New Features
+UKawaiiPhysicsLibrary::SetPhysicsSleepEnabled(Node, bool)
+UKawaiiPhysicsLibrary::SetCCDEnabled(Node, bool)
+UKawaiiPhysicsLibrary::SetBackstopEnabled(Node, bool)
 ```
 
 ---
@@ -202,16 +244,18 @@ UKawaiiPhysicsLibrary::SetSelfCollisionEnabled(Node, bool)
 2. **GetLinkedAnimInstances()** — в UE 5.5 non-const версия приватная. Используется const_cast workaround.
 3. **FAnimInstanceProxy::AddCurveValue()** — protected в UE 5.5. Используется публичный UAnimInstance::AddCurveValue() вместо этого.
 4. **Log Categories** — Runtime и Editor модули используют разные лог-категории из-за ограничений экспорта символов между DLL.
+5. **Camera Culling** — использует distance-based check (не точный frustum). Точный frustum check требует доступа к камере из animation thread.
 
 ---
 
 ## Планы
 
-- [ ] GPU Simulation: полная поддержка collision на GPU
-- [ ] Cloth Simulation: полноценная тканевая физика
-- [ ] Skeletal Mesh Collision: runtime добавление collision через blueprint
-- [ ] Performance Profiler: встроенные метрики для бюджетирования
-- [ ] Multi-platform: Android, iOS, Linux support
+- [x] GPU Simulation: экспериментальная поддержка (авто-отключение при < 50 костях)
+- [x] Cloth Simulation: базовая тканевая физика (shear/bend/stretch constraints)
+- [ ] Cosserat Rod: twist constraint для волос
+- [ ] VRM SpringBone Import Bridge
+- [ ] Batched Processing: World Subsystem для 20+ персонажей
+- [ ] Platform-specific LOD Profiles
 
 ---
 
@@ -229,4 +273,4 @@ MIT License — см. [LICENSE](LICENSE) для подробностей.
 
 ---
 
-*Последнее обновление: v1.31.1 — UE 5.5 Compatible*
+*Последнее обновление: v1.31.1 — UE 5.5 Compatible + 10 New Features*

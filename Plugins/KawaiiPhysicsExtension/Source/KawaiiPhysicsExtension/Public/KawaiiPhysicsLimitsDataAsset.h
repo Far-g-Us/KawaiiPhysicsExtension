@@ -141,7 +141,7 @@ struct FPlanarLimitData : public FCollisionLimitDataBase
 /**
  * 
  */
-UCLASS(Blueprintable)
+UCLASS(Blueprintable, BlueprintType)
 class KAWAIIPHYSICSEXTENSION_API UKawaiiPhysicsLimitsDataAsset : public UDataAsset, public IBoneReferenceSkeletonProvider
 
 {
@@ -152,14 +152,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Skeleton")
 	TObjectPtr<USkeleton> Skeleton;
 
-	// Deprecated
-	UPROPERTY(meta=(DeprecatedProperty))
+	// Deprecated (migrated to new arrays in PostLoad)
+	UPROPERTY(meta=(DeprecatedProperty), Transient)
 	TArray<FSphericalLimitData> SphericalLimitsData;
-	UPROPERTY(meta=(DeprecatedProperty))
+	UPROPERTY(meta=(DeprecatedProperty), Transient)
 	TArray<FCapsuleLimitData> CapsuleLimitsData;
-	UPROPERTY(meta=(DeprecatedProperty))
+	UPROPERTY(meta=(DeprecatedProperty), Transient)
 	TArray<FBoxLimitData> BoxLimitsData;
-	UPROPERTY(meta=(DeprecatedProperty))
+	UPROPERTY(meta=(DeprecatedProperty), Transient)
 	TArray<FPlanarLimitData> PlanarLimitsData;
 
 #endif

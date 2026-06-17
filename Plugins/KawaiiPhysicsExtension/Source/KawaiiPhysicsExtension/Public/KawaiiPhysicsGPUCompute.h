@@ -47,7 +47,8 @@ public:
 		float DeltaTime,
 		float PredictionScale,
 		const FVector& SkelCompMoveVector,
-		const FQuat& SkelCompMoveRotation
+		const FQuat& SkelCompMoveRotation,
+		const FVector& GravityInSimSpace
 	);
 
 	/**

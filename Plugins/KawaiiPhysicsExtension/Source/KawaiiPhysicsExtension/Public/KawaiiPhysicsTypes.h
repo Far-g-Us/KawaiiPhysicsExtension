@@ -427,7 +427,7 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysicsModifyBone
 	 *
 	 * @return True if the bone has a parent, false otherwise.
 	 */
-	bool HasParent() const { return ParentIndex >= 0; }
+	FORCEINLINE bool HasParent() const { return ParentIndex >= 0; }
 
 	/** Default constructor */
 	FKawaiiPhysicsModifyBone()
@@ -546,4 +546,32 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysicsLODSettings
 	/** Bone constraint iteration count override (0 = use global setting) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LOD", meta = (ClampMin = "0", ClampMax = "10"))
 	int32 BoneConstraintIterationsOverride = 0;
+};
+
+/**
+ * Transfer Motion source — a bone whose angular velocity creates external forces.
+ * E.g., a thigh bone kicking creates force on skirt bones.
+ */
+USTRUCT(BlueprintType)
+struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysicsTransferMotionSource
+{
+	GENERATED_BODY()
+
+	/** Source bone whose movement creates the force */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TransferMotion")
+	FBoneReference SourceBone;
+
+	/** Influence strength (0-1) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TransferMotion",
+		meta = (ClampMin = "0", ClampMax = "1"))
+	float Influence = 1.0f;
+
+	/** Maximum angular velocity cap (degrees/second) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TransferMotion",
+		meta = (ClampMin = "0"))
+	float MaxAngularVelocity = 360.0f;
+
+	// Internal state (not serialized)
+	FQuat PrevRotation = FQuat::Identity;
+	bool bInitialized = false;
 };

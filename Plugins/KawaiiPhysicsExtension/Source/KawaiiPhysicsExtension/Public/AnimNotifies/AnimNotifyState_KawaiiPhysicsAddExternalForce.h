@@ -21,7 +21,7 @@
  * during an animation sequence. It inherits from UAnimNotifyState and provides functionality to add and remove
  * external forces at the beginning and end of the animation notify state.
  */
-UCLASS(Blueprintable, meta = (DisplayName = "KawaiiPhyiscs: Add ExternalForce"))
+UCLASS(Blueprintable, meta = (DisplayName = "KawaiiPhysics: Add ExternalForce"))
 class KAWAIIPHYSICSEXTENSION_API UAnimNotifyState_KawaiiPhysicsAddExternalForce : public UAnimNotifyState
 {
 	GENERATED_BODY()
@@ -81,7 +81,7 @@ public:
 	 * Tagのフィルタリングにて完全一致にするか否か（Falseの場合は親Tagも含めます）
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ExternalForce")
-	bool bFilterExactMatch;
+	bool bFilterExactMatch = false;
 
 #if WITH_EDITOR
 	/**

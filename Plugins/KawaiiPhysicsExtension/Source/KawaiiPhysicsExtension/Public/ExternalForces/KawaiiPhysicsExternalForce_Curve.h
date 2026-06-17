@@ -40,7 +40,7 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce_Curve : public FK
 	UPROPERTY(EditAnywhere, BlueprintReadWrite,
 		meta=(EditCondition="CurveEvaluateType != EExternalForceCurveEvaluateType::Single", ClampMin="1", UIMin="1"),
 		Category="KawaiiPhysics|ExternalForce")
-	int SubstepCount = 10;
+	int32 SubstepCount = 10;
 
 	/**
 	 * Scale factor for the time.

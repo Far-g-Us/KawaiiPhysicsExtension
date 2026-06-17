@@ -95,6 +95,10 @@ void FAnimNode_KawaiiPhysics::ApplyPhysicsAsset(const FBoneContainer& RequiredBo
 	{
 		for (const auto& BodySetup : PhysicsAssetForLimits->SkeletalBodySetups)
 		{
+			if (!BodySetup)
+			{
+				continue;
+			}
 			FBoneReference DrivingBone = BodySetup->BoneName;
 			DrivingBone.Initialize(RequiredBones);
 			if (!DrivingBone.IsValidToEvaluate(RequiredBones))
@@ -482,6 +486,12 @@ void FAnimNode_KawaiiPhysics::AdjustBySphereCollision(FKawaiiPhysicsModifyBone& 
 			continue;
 		}
 
+		// Collision layer filtering: skip if layers don't match
+		if (CollisionLayer != 0 && Sphere.CollisionLayer != 0 && (CollisionLayer & Sphere.CollisionLayer) == 0)
+		{
+			continue;
+		}
+
 		if (Sphere.LimitType == ESphericalLimitType::Outer)
 		{
 			const float LimitDistanceOuter = Sphere.Radius + Bone.PhysicsSettings.Radius;
@@ -533,6 +543,12 @@ void FAnimNode_KawaiiPhysics::AdjustByCapsuleCollision(FKawaiiPhysicsModifyBone&
 			continue;
 		}
 
+		// Collision layer filtering: skip if layers don't match
+		if (CollisionLayer != 0 && Capsule.CollisionLayer != 0 && (CollisionLayer & Capsule.CollisionLayer) == 0)
+		{
+			continue;
+		}
+
 		FVector StartPoint = Capsule.Location + Capsule.Rotation.GetAxisZ() * Capsule.Length * 0.5f;
 		FVector EndPoint = Capsule.Location + Capsule.Rotation.GetAxisZ() * Capsule.Length * -0.5f;
 		const float DistSquared = FMath::PointDistToSegmentSquared(Bone.Location, StartPoint, EndPoint);
@@ -565,6 +581,12 @@ void FAnimNode_KawaiiPhysics::AdjustByBoxCollision(FKawaiiPhysicsModifyBone& Bon
 	for (auto& Box : Limits)
 	{
 		if (!Box.bEnable)
+		{
+			continue;
+		}
+
+		// Collision layer filtering: skip if layers don't match
+		if (CollisionLayer != 0 && Box.CollisionLayer != 0 && (CollisionLayer & Box.CollisionLayer) == 0)
 		{
 			continue;
 		}
@@ -767,8 +789,12 @@ void FAnimNode_KawaiiPhysics::AdjustByAngleLimit(
 
 		if (AngleOverLimit > 0.0f)
 		{
-			BoneDir = BoneDir.RotateAngleAxis(-AngleOverLimit, Axis.GetSafeNormal());
-			Bone.Location = BoneDir * (Bone.Location - ParentBone.Location).Size() + ParentBone.Location;
+			const FVector SafeAxis = Axis.GetSafeNormal();
+			if (!SafeAxis.IsNearlyZero())
+			{
+				BoneDir = BoneDir.RotateAngleAxis(-AngleOverLimit, SafeAxis);
+				Bone.Location = BoneDir * (Bone.Location - ParentBone.Location).Size() + ParentBone.Location;
+			}
 		}
 	}
 }
@@ -867,6 +893,40 @@ void FAnimNode_KawaiiPhysics::AdjustByBoneConstraints()
 		ModifyBone2.Location -= Delta;
 		BoneConstraint.Lambda += DeltaLambda;
 	}
+}
+
+// Heuristic solve order: sort constraints from leaves to root for faster XPBD convergence.
+// Constraints involving bones with fewer children (leaves) are solved first.
+void FAnimNode_KawaiiPhysics::SortConstraintsHeuristic()
+{
+	if (!bHeuristicSolveOrder || MergedBoneConstraints.Num() < 2)
+	{
+		return;
+	}
+
+	// Compute depth for each bone (distance from root)
+	TMap<int32, int32> BoneDepth;
+	for (int32 i = 0; i < ModifyBones.Num(); ++i)
+	{
+		int32 Depth = 0;
+		int32 Current = i;
+		while (ModifyBones.IsValidIndex(Current) && ModifyBones[Current].ParentIndex >= 0
+		       && ModifyBones[Current].ParentIndex != Current)
+		{
+			Depth++;
+			Current = ModifyBones[Current].ParentIndex;
+			if (Depth > ModifyBones.Num()) break; // cycle guard
+		}
+		BoneDepth.Add(i, Depth);
+	}
+
+	// Sort constraints: deepest bone first (leaves to root)
+	MergedBoneConstraints.Sort([&BoneDepth](const FModifyBoneConstraint& A, const FModifyBoneConstraint& B)
+	{
+		const int32 DepthA = BoneDepth.FindRef(A.ModifyBoneIndex1);
+		const int32 DepthB = BoneDepth.FindRef(B.ModifyBoneIndex1);
+		return DepthA > DepthB; // deeper bones first
+	});
 }
 
 void FAnimNode_KawaiiPhysics::InitBoneConstraints()
@@ -1140,7 +1200,7 @@ void FAnimNode_KawaiiPhysics::InitializeSharedCollision(const UAnimInstance* InA
 		CachedSharedCollisionEntry = Subsystem->FindOrCreateEntry(OwnerActor, SharedCollisionGroupTag);
 		if (CachedSharedCollisionEntry.IsValid())
 		{
-			const uint64 SourceID = reinterpret_cast<uint64>(this);
+			const uint64 SourceID = static_cast<uint64>(reinterpret_cast<uintptr_t>(this));
 			CachedSourceSlot = CachedSharedCollisionEntry->GetOrCreateSlot(SourceID);
 		}
 	}
@@ -1291,7 +1351,6 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 		FTransform MeshTransform = MeshCol.MeshTransform;
 		if (MeshCol.DrivingBone.BoneIndex >= 0)
 		{
-			const FReferenceSkeleton& RefSkeleton = Output.Pose.GetPose().GetBoneContainer().GetReferenceSkeleton();
 			const int32 BoneIndex = MeshCol.DrivingBone.GetCompactPoseIndex(Output.Pose.GetPose().GetBoneContainer()).GetInt();
 			if (BoneIndex >= 0)
 			{
@@ -1326,11 +1385,11 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 				if (NumVerts > 0)
 				{
 					// Compute bounding box from vertex positions
-					FVector FirstPos = FVector(VertexBuffer.VertexPosition(0));
+					FVector FirstPos = FVector(VertexBuffer.VertexPosition(0)) * MeshCol.MeshScale;
 					FBox Bounds(FirstPos, FirstPos);
 					for (int32 i = 1; i < NumVerts; ++i)
 					{
-						FVector VertPosF = FVector(VertexBuffer.VertexPosition(i));
+						FVector VertPosF = FVector(VertexBuffer.VertexPosition(i)) * MeshCol.MeshScale;
 						Bounds += VertPosF;
 					}
 
@@ -1341,6 +1400,7 @@ void FAnimNode_KawaiiPhysics::AdjustByMeshCollision(FKawaiiPhysicsModifyBone& Bo
 					const FVector Center = Bounds.GetCenter();
 					const FVector Extent = Bounds.GetExtent();
 
+					HullVertices.Reserve(8);
 					HullVertices.Add(Center + FVector(Extent.X, Extent.Y, Extent.Z));
 					HullVertices.Add(Center + FVector(Extent.X, Extent.Y, -Extent.Z));
 					HullVertices.Add(Center + FVector(Extent.X, -Extent.Y, Extent.Z));

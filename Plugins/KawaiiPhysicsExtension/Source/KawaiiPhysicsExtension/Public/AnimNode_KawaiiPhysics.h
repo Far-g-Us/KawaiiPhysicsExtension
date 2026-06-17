@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Misc/EngineVersionComparison.h"
+#include "HAL/CriticalSection.h"
 #include "BoneContainer.h"
 #include "BonePose.h"
 #include "GameplayTagContainer.h"
@@ -493,6 +494,21 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 		meta = (ClampMin = "0.5", ClampMax = "2", EditCondition = "bEnableSelfCollision", PinHiddenByDefault))
 	float SelfCollisionRadiusMultiplier = 1.0f;
 
+	/**
+	* Maximum check distance multiplier for self-collision early rejection.
+	* Bones further apart than MinDistance * RadiusMultiplier * this value are skipped.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Self Collision",
+		meta = (ClampMin = "1", ClampMax = "20", EditCondition = "bEnableSelfCollision", PinHiddenByDefault))
+	float SelfCollisionMaxCheckDistMultiplier = 4.0f;
+
+	/**
+	* Push split ratio for self-collision (0.0 = all to BoneB, 1.0 = all to BoneA, 0.5 = equal).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Self Collision",
+		meta = (ClampMin = "0", ClampMax = "1", EditCondition = "bEnableSelfCollision", PinHiddenByDefault))
+	float SelfCollisionPushSplitRatio = 0.5f;
+
 	// --- Spring-Based Volume Preservation ---
 
 	/**
@@ -580,6 +596,174 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 	bool bBudgetSkippedLastFrame = false;
 
 	double LastFrameEndTime = 0;
+
+	// --- Heuristic Solve Order ---
+
+	/**
+	* Sort bone constraints from leaves to root for faster XPBD convergence.
+	* One iteration with heuristic order often matches quality of multiple iterations with default order.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Solver",
+		meta = (PinHiddenByDefault))
+	bool bHeuristicSolveOrder = false;
+
+	// --- Physics Sleep ---
+
+	/**
+	* Enable automatic physics sleep when bones are nearly still.
+	* Saves CPU by freezing simulation for idle characters.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Sleep",
+		meta = (PinHiddenByDefault))
+	bool bEnablePhysicsSleep = false;
+
+	/**
+	* Velocity threshold below which bones are considered still (cm/s).
+	* When all bones are below this for SleepFrameCount frames, simulation freezes.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Sleep",
+		meta = (ClampMin = "0.1", ClampMax = "50", EditCondition = "bEnablePhysicsSleep", PinHiddenByDefault))
+	float SleepVelocityThreshold = 1.0f;
+
+	/**
+	* Number of consecutive frames below threshold before sleep activates.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Sleep",
+		meta = (ClampMin = "1", ClampMax = "60", EditCondition = "bEnablePhysicsSleep", PinHiddenByDefault))
+	int32 SleepFrameCount = 5;
+
+	// --- Collision Groups ---
+
+	/**
+	* Collision layer for this node (bitmask). Primitives with matching layers collide.
+	* Each primitive can have its own LayerMask. 0 = collides with everything.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Collision Groups",
+		meta = (PinHiddenByDefault))
+	int32 CollisionLayer = 0;
+
+	// --- Backstop Collision ---
+
+	/**
+	* Enable backstop collision — per-bone invisible hemisphere that prevents bones from penetrating the character mesh.
+	* Automatically generated from bone normals. Works without explicit collision primitives.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Backstop",
+		meta = (PinHiddenByDefault))
+	bool bEnableBackstopCollision = false;
+
+	/**
+	* Backstop collision radius (cm). Controls how far the backstop hemisphere extends from the bone.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Backstop",
+		meta = (ClampMin = "0.1", ClampMax = "20", EditCondition = "bEnableBackstopCollision", PinHiddenByDefault))
+	float BackstopRadius = 2.0f;
+
+	/**
+	* Backstop collision strength (0-1). How strongly the backstop pushes bones out of the mesh.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Backstop",
+		meta = (ClampMin = "0", ClampMax = "1", EditCondition = "bEnableBackstopCollision", PinHiddenByDefault))
+	float BackstopStrength = 0.8f;
+
+	// --- CCD (Edge Collision / Swept Sphere) ---
+
+	/**
+	* Enable Continuous Collision Detection for bone chains.
+	* Checks swept sphere between current and previous position to prevent tunneling.
+	* Critical for fast movements (attacks, acrobatics).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|CCD",
+		meta = (PinHiddenByDefault))
+	bool bEnableCCD = false;
+
+	/**
+	* CCD sphere radius (cm). Size of the swept sphere along bone trajectory.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|CCD",
+		meta = (ClampMin = "0.1", ClampMax = "10", EditCondition = "bEnableCCD", PinHiddenByDefault))
+	float CCDSphereRadius = 0.5f;
+
+	// --- Camera Culling ---
+
+	/**
+	* Enable camera frustum culling — skip simulation for invisible characters.
+	* Character outside camera frustum = zero simulation cost.
+	* Cached from GameThread in PreUpdate, used safely in animation thread.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Culling",
+		meta = (PinHiddenByDefault))
+	bool bEnableCameraFrustumCulling = false;
+
+	/**
+	* Maximum distance from camera for simulation to run (cm).
+	* Characters further than this are culled (simulation skipped).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|Culling",
+		meta = (ClampMin = "100", ClampMax = "50000", EditCondition = "bEnableCameraFrustumCulling", PinHiddenByDefault))
+	float CameraCullingDistance = 5000.0f;
+
+	// --- Pose Warp Smoothing ---
+
+	/**
+	* Enable pose warp smoothing — smooths sudden animation pose changes.
+	* Prevents hair "snapping" during hit reactions or sharp anime-style movements.
+	* Different from bEnableWarpingSmoothing (which handles actor teleport, not pose jumps).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|PoseWarp",
+		meta = (PinHiddenByDefault))
+	bool bEnablePoseWarpSmoothing = false;
+
+	/**
+	* Angle threshold (degrees) above which pose smoothing is applied.
+	* Lower = more aggressive smoothing, higher = only extreme pose changes smoothed.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|PoseWarp",
+		meta = (ClampMin = "5", ClampMax = "180", EditCondition = "bEnablePoseWarpSmoothing", PinHiddenByDefault))
+	float PoseWarpAngleThreshold = 45.0f;
+
+	/**
+	* Smoothing speed for pose warp (higher = faster convergence to new pose).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|PoseWarp",
+		meta = (ClampMin = "1", ClampMax = "50", EditCondition = "bEnablePoseWarpSmoothing", PinHiddenByDefault))
+	float PoseWarpSmoothingSpeed = 10.0f;
+
+	// --- 2.5D Anime Mode ---
+
+	/**
+	* Enable 2.5D anime mode — constrain bone movement to a plane for stylized anime physics.
+	* 0 = full 3D physics, 1 = fully planar 2D movement. Mix for anime-style motion.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|AnimeStyle",
+		meta = (PinHiddenByDefault))
+	bool bEnable2DAnimeMode = false;
+
+	/**
+	* Blend factor between 3D physics and 2D planar movement (0=3D, 1=2D).
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|AnimeStyle",
+		meta = (ClampMin = "0", ClampMax = "1", EditCondition = "bEnable2DAnimeMode", PinHiddenByDefault))
+	float AnimePlaneBlend = 0.5f;
+
+	/**
+	* Normal of the plane for 2D anime mode (in component space).
+	* ForwardVector = side-scrolling, UpVector = top-down, RightVector = front-facing.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|AnimeStyle",
+		meta = (EditCondition = "bEnable2DAnimeMode", PinHiddenByDefault))
+	FVector AnimePlaneNormal = FVector::ForwardVector;
+
+	// --- Transfer Motion ---
+
+	/**
+	* Enable transfer motion — angular velocity of source bones creates external forces.
+	* Unlike WorldDamping (reacts to whole component), this reacts to individual bone movement.
+	* E.g., leg kick creates force on skirt, head turn creates force on hair.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|TransferMotion",
+		meta = (PinHiddenByDefault))
+	bool bEnableTransferMotion = false;
 
 	// --- Physics Material ---
 
@@ -897,6 +1081,11 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 	UPROPERTY(Transient, VisibleAnywhere, AdvancedDisplay, Category = "Limits")
 	TArray<FPlanarLimit> PlanarLimitsData;
 
+	// Transfer Motion sources
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Physics Settings|TransferMotion",
+		meta = (PinHiddenByDefault))
+	TArray<FKawaiiPhysicsTransferMotionSource> TransferMotionSources;
+
 	/**
 	 * コリジョンを同じActor/ChildActorファミリー内のKawaiiPhysicsに共有する
 	 * Provide this node's collision limits to KawaiiPhysics nodes in the same attached actor family
@@ -1170,11 +1359,24 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 	TArray<float> CachedLODDamping;
 	TArray<float> CachedLODStiffness;
 	TArray<float> CachedLODLimitAngle;
-	float CachedAllowWorldCollision = 1.0f;
+	bool CachedAllowWorldCollision = true;
 	int32 CachedBeforeConstraintIterations = 0;
 	int32 CachedAfterConstraintIterations = 0;
 	EKawaiiPhysicsSimulationSpace CachedSimulationSpace = EKawaiiPhysicsSimulationSpace::WorldSpace;
 	bool bLODCacheSaved = false;
+	FVector CachedCameraLocation = FVector::ZeroVector;
+	float CurrentGravityMultiplier = 1.0f;
+
+	// Physics Sleep state
+	int32 SleepFrameCounter = 0;
+	bool bIsAsleep = false;
+	FVector CachedComponentLocation = FVector::ZeroVector;
+
+	// Camera culling state (cached from GameThread PreUpdate)
+	bool bCachedIsInFrustum = true;
+
+	// Heuristic solve order cache
+	bool bHeuristicOrderSorted = false;
 
 	/**
 	* Detected pose for pose-based blending (Standing/Sitting/Lying).
@@ -1194,6 +1396,29 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 
 	/** Stores the delta time from the previous frame. */
 	float DeltaTimeOld = 0.0f;
+
+	/** Deferred impulse: queued on GameThread, applied on worker thread at start of simulation */
+	struct FDeferredImpulse
+	{
+		int32 BoneIndex;
+		FVector Direction;
+		float Strength;
+	};
+	TArray<FDeferredImpulse> PendingImpulses;
+	TSharedPtr<FCriticalSection> ImpulseMutex;
+	TSharedPtr<FCriticalSection> CollisionEventsMutex;
+
+	/** Ensure mutexes are initialized (lazy init) */
+	FCriticalSection& GetImpulseMutex()
+	{
+		if (!ImpulseMutex.IsValid()) ImpulseMutex = MakeShared<FCriticalSection>();
+		return *ImpulseMutex;
+	}
+	FCriticalSection& GetCollisionEventsMutex()
+	{
+		if (!CollisionEventsMutex.IsValid()) CollisionEventsMutex = MakeShared<FCriticalSection>();
+		return *CollisionEventsMutex;
+	}
 
 	/** Cached AnimInstanceProxy pointer (set during evaluation, used by library functions) */
 	FAnimInstanceProxy* AnimInstanceProxyForLib = nullptr;
@@ -1389,7 +1614,7 @@ public:
 	 */
 	float GetDeltaTimeOld() const;
 
-	int32 GetEffectiveTargetFramerate() const
+	FORCEINLINE int32 GetEffectiveTargetFramerate() const
 	{
 		return FMath::Max(1, TargetFramerate);
 	}
@@ -1405,7 +1630,7 @@ public:
 	 * Returns the dt the simulation should use: the fixed dt while substepping, otherwise the real
 	 * frame dt. Gravity / integration / external-force classes read this instead of DeltaTime.
 	 */
-	float GetStepDeltaTime() const
+	FORCEINLINE float GetStepDeltaTime() const
 	{
 		return bInSubstep ? StepDeltaTime : DeltaTime;
 	}
@@ -1462,7 +1687,26 @@ protected:
 	 * @param Rotation The quaternion representing the bone's rotation.
 	 * @return The forward vector of the bone.
 	 */
-	FVector GetBoneForwardVector(const FQuat& Rotation) const;
+	FORCEINLINE FVector GetBoneForwardVector(const FQuat& Rotation) const
+	{
+		switch (BoneForwardAxis)
+		{
+		case EBoneForwardAxis::X_Positive:
+			return Rotation.GetAxisX();
+		case EBoneForwardAxis::X_Negative:
+			return -Rotation.GetAxisX();
+		case EBoneForwardAxis::Y_Positive:
+			return Rotation.GetAxisY();
+		case EBoneForwardAxis::Y_Negative:
+			return -Rotation.GetAxisY();
+		case EBoneForwardAxis::Z_Positive:
+			return Rotation.GetAxisZ();
+		case EBoneForwardAxis::Z_Negative:
+			return -Rotation.GetAxisZ();
+		default:
+			return Rotation.GetAxisX();
+		}
+	}
 
 	// FAnimNode_SkeletalControlBase interface
 	virtual void InitializeBoneReferences(const FBoneContainer& RequiredBones) override;
@@ -1812,6 +2056,12 @@ protected:
 	 * @param Limits An array of spherical limits.
 	 */
 	void AdjustBySphereCollision(FKawaiiPhysicsModifyBone& Bone, TArray<FSphericalLimit>& Limits);
+
+	// --- New features ---
+	void SortConstraintsHeuristic();
+	void ApplyPhysicsSleep();
+	void ApplyCCD();
+	void ApplyBackstopCollision();
 
 	/**
 	 * Adjusts the bone position based on capsule collision limits.

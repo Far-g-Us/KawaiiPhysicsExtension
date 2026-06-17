@@ -2,6 +2,7 @@
 
 #include "AnimNotifies/AnimNotify_KawaiiPhysicsImpulse.h"
 #include "AnimNode_KawaiiPhysics.h"
+#include "KawaiiPhysics.h"
 #include "KawaiiPhysicsLibrary.h"
 #include "KawaiiPhysicsTypes.h"
 
@@ -126,11 +127,10 @@ void UAnimNotify_KawaiiPhysicsImpulse::Notify(USkeletalMeshComponent* MeshComp, 
 			}
 		}
 
-		// Apply impulses
+		// Apply impulses — queue for thread-safe application during simulation
 		for (int32 i = 0; i < BonesToImpulse.Num(); ++i)
 		{
 			const int32 BoneIndex = BonesToImpulse[i];
-			FKawaiiPhysicsModifyBone& Bone = AnimNode->ModifyBones[BoneIndex];
 
 			// Calculate strength for this bone (with decay for chain)
 			float BoneStrength = CurrentStrength;
@@ -147,8 +147,9 @@ void UAnimNotify_KawaiiPhysicsImpulse::Notify(USkeletalMeshComponent* MeshComp, 
 				FinalDirection = ComponentTransform.InverseTransformVector(ImpulseDirection);
 			}
 
-			// Apply impulse by modifying PrevLocation (Verlet integration uses Location - PrevLocation as velocity)
-			Bone.PrevLocation -= FinalDirection * BoneStrength * AnimNode->DeltaTimeOld;
+			// Queue impulse for thread-safe application
+			FScopeLock Lock(&AnimNode->GetImpulseMutex());
+			AnimNode->PendingImpulses.Add({BoneIndex, FinalDirection, BoneStrength});
 		}
 	}
 }
@@ -160,12 +161,12 @@ void UAnimNotify_KawaiiPhysicsImpulse::ValidateAssociatedAssets()
 
 	if (BoneName.IsNone())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("KawaiiPhysics Impulse: BoneName is empty"));
+		UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT("KawaiiPhysics Impulse: BoneName is empty"));
 	}
 
 	if (FMath::IsNearlyZero(Strength))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("KawaiiPhysics Impulse: Strength is zero, notify will have no effect"));
+		UE_LOG(LogKawaiiPhysicsExtension, Warning, TEXT("KawaiiPhysics Impulse: Strength is zero, notify will have no effect"));
 	}
 }
 #endif

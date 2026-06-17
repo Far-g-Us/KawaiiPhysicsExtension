@@ -56,6 +56,10 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysicsChainPreset
 	/** Use custom collision from body mesh */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chain")
 	bool bUseBodyMeshCollision = false;
+
+	/** Override simulation space for this chain. WorldSpace for hair (reacts to head movement), ComponentSpace for skirt. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chain")
+	EKawaiiPhysicsSimulationSpace SimulationSpaceOverride = EKawaiiPhysicsSimulationSpace::WorldSpace;
 };
 
 /**

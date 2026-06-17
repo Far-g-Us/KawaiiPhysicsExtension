@@ -73,6 +73,12 @@ void FAnimNode_KawaiiPhysics::InitializeBoneReferences(const FBoneContainer& Req
 			Target.Bone.Initialize(RequiredBones);
 		}
 	}
+
+	for (auto& Source : TransferMotionSources)
+	{
+		Source.SourceBone.Initialize(RequiredBones);
+		Source.bInitialized = false;
+	}
 }
 
 void FAnimNode_KawaiiPhysics::InitModifyBones(FComponentSpacePoseContext& Output, const FBoneContainer& BoneContainer)
@@ -395,10 +401,9 @@ void FAnimNode_KawaiiPhysics::RollbackInterBoneDummyBones(TArray<FKawaiiPhysicsM
                                                           const int32 ParentModifyBoneIndex,
                                                           const TArray<int32>& InsertedInterBoneDummyIndices) const
 {
-	// 子ボーンが無効（Excluded等） → 挿入済みダミーをクリーンアップ
-	// ダミーは配列末尾に連続しているため逆順で安全に削除可能
-	// Remove in reverse order; after each removal, adjust remaining stored indices
-	// since elements shift down.
+	// Dummies are inserted after ParentModifyBoneIndex and are contiguous at the end.
+	// Remove in reverse order for safe index-based removal.
+	TSet<int32> DummySet(InsertedInterBoneDummyIndices);
 	for (int32 k = InsertedInterBoneDummyIndices.Num() - 1; k >= 0; k--)
 	{
 		const int32 DummyIdx = InsertedInterBoneDummyIndices[k];
@@ -407,10 +412,13 @@ void FAnimNode_KawaiiPhysics::RollbackInterBoneDummyBones(TArray<FKawaiiPhysicsM
 			InModifyBones.RemoveAt(DummyIdx);
 		}
 	}
-	InModifyBones[ParentModifyBoneIndex].ChildIndices.RemoveAll([&](int32 Idx)
+	if (ParentModifyBoneIndex >= 0 && ParentModifyBoneIndex < InModifyBones.Num())
 	{
-		return InsertedInterBoneDummyIndices.Contains(Idx);
-	});
+		InModifyBones[ParentModifyBoneIndex].ChildIndices.RemoveAll([&](int32 Idx)
+		{
+			return DummySet.Contains(Idx);
+		});
+	}
 }
 
 int32 FAnimNode_KawaiiPhysics::CollectChildBones(const FReferenceSkeleton& RefSkeleton, const int32 ParentBoneIndex,
@@ -597,16 +605,13 @@ void FAnimNode_KawaiiPhysics::UpdateSkelCompMove(FComponentSpacePoseContext& Out
 		TeleportType = ETeleportType::TeleportPhysics;
 	}
 
-	// Reset prediction scale each frame before auto-prediction boost
-	PredictionScale = 1.0f;
-
 	// Auto-prediction boost for Motion Warping / large movements
 	if (bAutoPredictionOnLargeMovement && TeleportType != ETeleportType::TeleportPhysics)
 	{
 		const float MovementSize = SkelCompMoveVector.Size();
 		if (MovementSize > AutoPredictionMovementThreshold)
 		{
-			// Temporarily boost prediction to smooth out warp reaction
+			// Boost prediction only if user's value is lower than the boost amount
 			PredictionScale = FMath::Max(PredictionScale, AutoPredictionBoostAmount);
 		}
 	}
@@ -623,6 +628,31 @@ void FAnimNode_KawaiiPhysics::UpdateSkelCompMove(FComponentSpacePoseContext& Out
 				FrameDeltaTime, WarpingSmoothingSpeed
 			);
 			SkelCompMoveVector = SmoothedDelta;
+		}
+	}
+
+	// Pose Warp Smoothing: smooth sudden animation pose changes (hit reactions, sharp anime movements)
+	if (bEnablePoseWarpSmoothing)
+	{
+		const float AngleThresholdRad = FMath::DegreesToRadians(PoseWarpAngleThreshold);
+		const float SmoothFactor = FMath::Clamp(PoseWarpSmoothingSpeed * FrameDeltaTime, 0.0f, 1.0f);
+
+		for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
+		{
+			if (Bone.bSkipSimulate || Bone.bDummy || Bone.bBridgeDummy)
+			{
+				continue;
+			}
+
+			const FQuat& PrevRot = Bone.PrevPoseRotation;
+			const FQuat& CurrRot = Bone.PoseRotation;
+			const float AngleDiff = PrevRot.AngularDistance(CurrRot);
+
+			if (AngleDiff > AngleThresholdRad)
+			{
+				// Smoothly interpolate pose rotation instead of snapping
+				Bone.PoseRotation = FQuat::Slerp(PrevRot, CurrRot, SmoothFactor);
+			}
 		}
 	}
 

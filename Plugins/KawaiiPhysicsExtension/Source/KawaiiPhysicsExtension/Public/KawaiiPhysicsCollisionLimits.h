@@ -67,6 +67,10 @@ struct FCollisionLimitBase
 	UPROPERTY()
 	bool bEnable = true;
 
+	/** Collision layer bitmask. 0 = collides with all layers. Primitives only collide when their layers match. */
+	UPROPERTY(EditAnywhere, Category = CollisionLimitBase)
+	int32 CollisionLayer = 0;
+
 	/** Source type of the collision limit */
 	UPROPERTY(VisibleAnywhere, Category = CollisionLimitBase)
 	ECollisionSourceType SourceType = ECollisionSourceType::AnimNode;
@@ -92,6 +96,7 @@ struct FCollisionLimitBase
 		Location = Other.Location;
 		Rotation = Other.Rotation;
 		bEnable = Other.bEnable;
+		CollisionLayer = Other.CollisionLayer;
 		SourceType = Other.SourceType;
 #if WITH_EDITORONLY_DATA
 		Guid = Other.Guid;

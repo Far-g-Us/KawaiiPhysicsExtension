@@ -13,6 +13,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogKawaiiPhysicsGPU, Log, All);
 
 bool UKawaiiPhysicsGPUCompute::IsGPUSimulationAvailable()
 {
+	// Compute shaders require DX12/Vulkan/Metal — OpenGL does not support them.
+	// On Vulkan, IsOpenGLPlatform returns false (correct). DX12 also returns false.
 	return !IsOpenGLPlatform(GMaxRHIShaderPlatform);
 }
 
@@ -30,14 +32,16 @@ bool UKawaiiPhysicsGPUCompute::Initialize(int32 NumBones)
 		return false;
 	}
 
-	// GPU sync overhead exceeds CPU benefit for small bone counts
-	// Recommend CPU simulation for < 50 bones
-	if (NumBones < 50)
+static constexpr int32 GPUMinBoneCountThreshold = 50;
+
+// GPU sync overhead exceeds CPU benefit for small bone counts
+// Recommend CPU simulation for < GPUMinBoneCountThreshold bones
+if (NumBones < GPUMinBoneCountThreshold)
 	{
 		UE_LOG(LogKawaiiPhysicsGPU, Warning,
-			TEXT("GPU simulation disabled: %d bones is below the 50-bone threshold. "
+			TEXT("GPU simulation disabled: %d bones is below the %d-bone threshold. "
 			     "GPU sync overhead exceeds CPU benefit for small chains. Use CPU simulation."),
-			NumBones);
+			NumBones, GPUMinBoneCountThreshold);
 		return false;
 	}
 
@@ -57,7 +61,8 @@ void UKawaiiPhysicsGPUCompute::TickGPU(
 	float DeltaTime,
 	float PredictionScale,
 	const FVector& SkelCompMoveVector,
-	const FQuat& SkelCompMoveRotation)
+	const FQuat& SkelCompMoveRotation,
+	const FVector& GravityInSimSpace)
 {
 	if (!bInitialized || NumActiveBones <= 0)
 	{
@@ -84,7 +89,11 @@ void UKawaiiPhysicsGPUCompute::TickGPU(
 	// CPU fallback: run the same algorithm as the compute shader
 	const float PredMove = PredictionScale;
 
-	for (int32 i = 0; i < NumActiveBones; ++i)
+	// Bounds validation: ensure caller-provided count doesn't exceed array sizes
+	const int32 MaxBones = FMath::Min3(BoneLocations.Num(), BonePrevLocations.Num(), BonePoseLocations.Num());
+	const int32 SafeNumBones = FMath::Min(NumActiveBones, MaxBones);
+
+	for (int32 i = 0; i < SafeNumBones; ++i)
 	{
 		FVector& Location = BoneLocations[i];
 		FVector& PrevLocation = BonePrevLocations[i];
@@ -101,7 +110,8 @@ void UKawaiiPhysicsGPUCompute::TickGPU(
 		const FVector Velocity = (Location - PrevLocation) * (1.0f - Damping);
 		FVector NewLocation = Location + Velocity * DeltaTime;
 
-		// NOTE: Gravity not applied in GPU fallback — TickGPU lacks GravityInSimSpace parameter.
+		// Apply gravity
+		NewLocation += GravityInSimSpace * DeltaTime * DeltaTime;
 
 		// Stiffness: pull towards pose
 		const FVector PullDir = PoseLocation - NewLocation;

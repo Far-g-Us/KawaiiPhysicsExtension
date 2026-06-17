@@ -25,13 +25,13 @@ void FKawaiiPhysicsSyncTarget::Apply(TArray<FKawaiiPhysicsModifyBone>& ModifyBon
 {
 	if (ModifyBoneIndex < 0 || !ModifyBones.IsValidIndex(ModifyBoneIndex))
 	{
-		return;;
+		return;
 	}
 
 	FKawaiiPhysicsModifyBone& Bone = ModifyBones[ModifyBoneIndex];
 	if (Bone.bSkipSimulate)
 	{
-		return;;
+		return;
 	}
 
 	// // Apply Alpha per target
@@ -41,7 +41,7 @@ void FKawaiiPhysicsSyncTarget::Apply(TArray<FKawaiiPhysicsModifyBone>& ModifyBon
 	TranslationBySyncBone = ScaledTranslation;
 #endif
 
-	if (Bone.ParentIndex >= 0)
+	if (Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
 	{
 		// Maintain bone length relative to parent
 		const auto& ParentBone = ModifyBones[Bone.ParentIndex];
@@ -60,8 +60,8 @@ void FKawaiiPhysicsSyncTarget::DebugDraw(FPrimitiveDrawInterface* PDI, const FAn
 {
 	auto DrawForceArrow = [&](const FVector& Force, const FVector& Location)
 	{
-		const FRotator Rotation = FRotationMatrix::MakeFromX(Force.GetSafeNormal()).Rotator();
-		const FMatrix TransformMatrix = FRotationMatrix(Rotation) * FTranslationMatrix(Location);
+		const FRotator Rotation = Force.GetSafeNormal().Rotation();
+		const FMatrix TransformMatrix = FRotationTranslationMatrix(Rotation, Location);
 		DrawDirectionalArrow(PDI, TransformMatrix, FLinearColor::Green, Force.Length(), 2.0f, SDPG_Foreground);
 	};
 

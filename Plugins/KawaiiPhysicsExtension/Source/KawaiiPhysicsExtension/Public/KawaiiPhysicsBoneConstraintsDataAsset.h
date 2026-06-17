@@ -74,7 +74,7 @@ struct FRegexPatternBoneSet
 /**
  * Data asset for managing bone constraints in KawaiiPhysics.
  */
-UCLASS(Blueprintable)
+UCLASS(Blueprintable, BlueprintType)
 class KAWAIIPHYSICSEXTENSION_API UKawaiiPhysicsBoneConstraintsDataAsset : public UDataAsset,
                                                                  public IBoneReferenceSkeletonProvider
 {

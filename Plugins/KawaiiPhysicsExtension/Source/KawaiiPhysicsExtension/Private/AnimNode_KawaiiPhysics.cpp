@@ -15,6 +15,7 @@
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Engine/World.h"
 #include "PhysicsEngine/PhysicsSettings.h"
+#include "Kismet/GameplayStatics.h"
 
 #if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 5
 #include "PhysicsEngine/SkeletalBodySetup.h"
@@ -34,6 +35,9 @@
 #include "DrawDebugHelpers.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_KawaiiPhysics)
+
+static constexpr int32 InterBoneDummyWarningThreshold = 50;
+static constexpr int32 BridgeDummyWarningThreshold = 100;
 
 #if ENABLE_ANIM_DEBUG
 TAutoConsoleVariable<bool> CVarAnimNodeKawaiiPhysicsEnable(
@@ -127,6 +131,7 @@ void FAnimNode_KawaiiPhysics::RecordBoneCollisionEvent(FName BoneName, const FVe
 	Event.CollisionNormal = CollisionNormal;
 	Event.TimeStamp = FPlatformTime::Seconds();
 
+	FScopeLock Lock(&GetCollisionEventsMutex());
 	if (RecentCollisionEvents.Num() >= MaxEvents)
 	{
 		RecentCollisionEvents.RemoveAt(0);
@@ -248,7 +253,7 @@ void FAnimNode_KawaiiPhysics::AnimDrawDebug(FComponentSpacePoseContext& Output)
 	{
 		return;
 	}
-	if (const UWorld* World = SkelComp->GetWorld(); !World->IsPreviewWorld())
+	if (const UWorld* World = SkelComp->GetWorld(); World && !World->IsPreviewWorld())
 	{
 		if (SkelComp->bRecentlyRendered)
 		{
@@ -433,19 +438,22 @@ void FAnimNode_KawaiiPhysics::AnimDrawDebug(FComponentSpacePoseContext& Output)
 				}
 
 				// Draw recent collision events (red crosshairs)
-				for (const auto& Event : RecentCollisionEvents)
 				{
-					const float Age = FPlatformTime::Seconds() - Event.TimeStamp;
-					if (Age < 2.0f) // Show for 2 seconds
+					FScopeLock Lock(&GetCollisionEventsMutex());
+					for (const auto& Event : RecentCollisionEvents)
 					{
-						const float AnimAlpha = 1.0f - (Age / 2.0f);
-						const FColor EventColor = FColor(255, 0, 0, FMath::Clamp((int32)(AnimAlpha * 255), 0, 255));
-						AnimInstanceProxy->AnimDrawDebugSphere(Event.CollisionPoint, 3.0f, 4, EventColor,
-						                                       false, -1, LineThickness * 2.0f, SDPG_Foreground);
-						AnimInstanceProxy->AnimDrawDebugLine(
-							Event.CollisionPoint,
-							Event.CollisionPoint + Event.CollisionNormal * 15.0f,
-							EventColor, false, -1.0f, LineThickness, SDPG_Foreground);
+						const float Age = FPlatformTime::Seconds() - Event.TimeStamp;
+						if (Age < 2.0f) // Show for 2 seconds
+						{
+							const float AnimAlpha = 1.0f - (Age / 2.0f);
+							const FColor EventColor = FColor(255, 0, 0, FMath::Clamp((int32)(AnimAlpha * 255), 0, 255));
+							AnimInstanceProxy->AnimDrawDebugSphere(Event.CollisionPoint, 3.0f, 4, EventColor,
+							                                       false, -1, LineThickness * 2.0f, SDPG_Foreground);
+							AnimInstanceProxy->AnimDrawDebugLine(
+								Event.CollisionPoint,
+								Event.CollisionPoint + Event.CollisionNormal * 15.0f,
+								EventColor, false, -1.0f, LineThickness, SDPG_Foreground);
+						}
 					}
 				}
 			}
@@ -639,15 +647,15 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 		}
 		SET_DWORD_STAT(STAT_KawaiiPhysics_NumInterBoneDummyBones, InterBoneDummyCount);
 		SET_DWORD_STAT(STAT_KawaiiPhysics_NumBridgeDummyBones, BridgeDummyCount);
-		if (InterBoneDummyCount > 50)
+		if (InterBoneDummyCount > InterBoneDummyWarningThreshold)
 		{
-			UE_LOG(LogAnimation, Warning,
+			UE_LOG(LogKawaiiPhysicsExtension, Warning,
 				TEXT("KawaiiPhysics: %d inter-bone dummy bones generated. This may impact performance. Consider reducing BoneSubdivisionCount."),
 				InterBoneDummyCount);
 		}
-		if (BridgeDummyCount > 100)
+		if (BridgeDummyCount > BridgeDummyWarningThreshold)
 		{
-			UE_LOG(LogAnimation, Warning,
+			UE_LOG(LogKawaiiPhysicsExtension, Warning,
 				TEXT("KawaiiPhysics: %d bridge collision-proxy dummy bones and %d merged bone constraints generated. This may impact performance. Consider reducing BoneConstraintSubdivisionCount."),
 				BridgeDummyCount, MergedBoneConstraints.Num());
 		}
@@ -743,11 +751,9 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 		const USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
 		if (SkelComp)
 		{
-			// Get camera/view location for distance-based LOD
-			// Use component location as approximation (GetPlayerViewLocation removed in UE 5.5)
-			const FVector CamLocation = SkelComp->GetComponentLocation();
+			// Use camera location cached from GameThread (PreUpdate)
 			const FVector CompLocation = SkelComp->GetComponentLocation();
-			const float Distance = FVector::Dist(CamLocation, CompLocation);
+			const float Distance = FVector::Dist(CachedCameraLocation, CompLocation);
 
 			if (Distance > DistanceLODStart)
 			{
@@ -822,7 +828,7 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 						ModifyBones[i].PhysicsSettings.Stiffness = CachedLODStiffness[i];
 						ModifyBones[i].PhysicsSettings.LimitAngle = CachedLODLimitAngle[i];
 					}
-					bAllowWorldCollision = CachedAllowWorldCollision != 0.0f;
+					bAllowWorldCollision = CachedAllowWorldCollision;
 					BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
 					BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
 					SimulationSpace = CachedSimulationSpace;
@@ -939,7 +945,7 @@ void FAnimNode_KawaiiPhysics::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 			}
 			CurrentDistanceLODAlpha = 0.0f;
 		}
-		bAllowWorldCollision = CachedAllowWorldCollision != 0.0f;
+		bAllowWorldCollision = CachedAllowWorldCollision;
 		BoneConstraintIterationCountBeforeCollision = CachedBeforeConstraintIterations;
 		BoneConstraintIterationCountAfterCollision = CachedAfterConstraintIterations;
 		SimulationSpace = CachedSimulationSpace;
@@ -1079,6 +1085,43 @@ void FAnimNode_KawaiiPhysics::PreUpdate(const UAnimInstance* InAnimInstance)
 {
 	SCOPE_CYCLE_COUNTER(STAT_KawaiiPhysics_PreUpdate);
 
+	// Cache camera location from GameThread for Distance-LOD
+	// (GetPlayerViewLocation() was removed from UAnimInstance in UE 5.5)
+	if (bEnableDistanceLOD)
+	{
+		if (const UWorld* World = InAnimInstance->GetWorld())
+		{
+			if (APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0))
+			{
+				if (AActor* ViewTarget = PC->GetViewTarget())
+				{
+					CachedCameraLocation = ViewTarget->GetActorLocation();
+				}
+			}
+		}
+	}
+
+	// Camera frustum culling: cache visibility from GameThread for animation thread
+	if (bEnableCameraFrustumCulling)
+	{
+		bCachedIsInFrustum = true; // default: visible
+		if (const UWorld* World = InAnimInstance->GetWorld())
+		{
+			if (APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0))
+			{
+				if (AActor* ViewTarget = PC->GetViewTarget())
+				{
+					if (const USkeletalMeshComponent* SkelComp = InAnimInstance->GetSkelMeshComponent())
+					{
+						// Simple distance-based frustum check (no camera access needed)
+						const float Distance = FVector::Dist(SkelComp->GetComponentLocation(), CachedCameraLocation);
+						bCachedIsInFrustum = (Distance < CameraCullingDistance);
+					}
+				}
+			}
+		}
+	}
+
 #if WITH_EDITOR
 	if (const UWorld* World = InAnimInstance->GetWorld())
 	{
@@ -1147,22 +1190,3 @@ float FAnimNode_KawaiiPhysics::GetDeltaTimeOld() const
 	return this->DeltaTimeOld;
 }
 
-FVector FAnimNode_KawaiiPhysics::GetBoneForwardVector(const FQuat& Rotation) const
-{
-	switch (BoneForwardAxis)
-	{
-	default:
-	case EBoneForwardAxis::X_Positive:
-		return Rotation.GetAxisX();
-	case EBoneForwardAxis::X_Negative:
-		return -Rotation.GetAxisX();
-	case EBoneForwardAxis::Y_Positive:
-		return Rotation.GetAxisY();
-	case EBoneForwardAxis::Y_Negative:
-		return -Rotation.GetAxisY();
-	case EBoneForwardAxis::Z_Positive:
-		return Rotation.GetAxisZ();
-	case EBoneForwardAxis::Z_Negative:
-		return -Rotation.GetAxisZ();
-	}
-}
