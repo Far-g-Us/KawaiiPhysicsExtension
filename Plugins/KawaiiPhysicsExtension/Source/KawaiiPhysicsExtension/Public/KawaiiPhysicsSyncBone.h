@@ -93,6 +93,10 @@ public:
 	// Index in ModifyBone for the target bone
 	UPROPERTY()
 	int32 ModifyBoneIndex = -1;
+
+	// InitSyncBoneでScaleCurve評価を完了したかのフラグ
+	// Whether ScaleCurve evaluation has been completed in InitSyncBone
+	bool bScaleInitialized = false;
 };
 
 USTRUCT(BlueprintType)

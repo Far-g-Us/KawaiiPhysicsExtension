@@ -40,7 +40,7 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce_WindZone : public
 	FKawaiiPhysics_ExternalForce_WindZone()
 	{
 		bCanSelectForceSpace = false;
-		ExternalForceSpace = EExternalForceSpace::WorldSpace;
+		ExternalForceSpace = EKawaiiPhysicsSimulationSpace::WorldSpace;
 	}
 
 	/** Shape of the wind zone */

@@ -100,7 +100,9 @@ static constexpr float MorphTargetSpeedNormalizationScale = 100.0f;
 #endif
 
 #include "KawaiiPhysics.h"
+#include "KawaiiPhysicsGPUCompute.h"
 #include "AnimNode_KawaiiPhysicsInternal.h"
+#include "Engine/SkeletalMesh.h"
 
 void FAnimNode_KawaiiPhysics::UpdatePhysicsSettingsOfModifyBones()
 {
@@ -210,6 +212,21 @@ void FAnimNode_KawaiiPhysics::SimulateModifyBones(FComponentSpacePoseContext& Ou
 	if (bEnableCameraFrustumCulling && !bCachedIsInFrustum)
 	{
 		return;
+	}
+
+	// GPU compute: create/destroy on flag change (runtime Blueprint toggle)
+	if (bEnableGPUSimulation && !GPUCompute)
+	{
+		USkeletalMeshComponent* SkelComp = Output.AnimInstanceProxy->GetSkelMeshComponent();
+		if (SkelComp)
+		{
+			GPUCompute = NewObject<UKawaiiPhysicsGPUCompute>(SkelComp);
+		}
+	}
+	else if (!bEnableGPUSimulation && GPUCompute)
+	{
+		GPUCompute->Release();
+		GPUCompute = nullptr;
 	}
 
 	CurrentGravityMultiplier = 1.0f;
@@ -447,7 +464,79 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 		}
 	}
 
-	// Simulate（Exponent は GetStepDeltaTime ベース。サブステップ時は TargetFramerate*FixedDt=1）
+	// GPU path: offload Verlet integration + stiffness + world move to GPU compute
+	const bool bUseGPU = bEnableGPUSimulation && GPUCompute && GPUCompute->IsGPUSimulationAvailable();
+	if (bUseGPU)
+	{
+		const int32 NumBones = ModifyBones.Num();
+		TArray<FVector> GPUBoneLocations;
+		TArray<FVector> GPUBonePrevLocations;
+		TArray<FVector> GPUBonePoseLocations;
+		TArray<FVector4> GPUBoneSettings;
+		GPUBoneLocations.SetNumUninitialized(NumBones);
+		GPUBonePrevLocations.SetNumUninitialized(NumBones);
+		GPUBonePoseLocations.SetNumUninitialized(NumBones);
+		GPUBoneSettings.SetNumUninitialized(NumBones);
+
+		int32 NumActive = 0;
+		for (int32 i = 0; i < NumBones; ++i)
+		{
+			const FKawaiiPhysicsModifyBone& Bone = ModifyBones[i];
+			GPUBoneLocations[i] = Bone.Location;
+			GPUBonePrevLocations[i] = Bone.PrevLocation;
+			GPUBonePoseLocations[i] = Bone.PoseLocation;
+			// Pack: X=Damping, Y=WorldDampingLocation, Z=unused, W=Stiffness
+			GPUBoneSettings[i] = FVector4(
+				Bone.PhysicsSettings.Damping,
+				Bone.PhysicsSettings.WorldDampingLocation,
+				0.0f,
+				Bone.PhysicsSettings.Stiffness);
+			if (!Bone.bSkipSimulate && !Bone.bBridgeDummy)
+			{
+				NumActive = i + 1;
+			}
+		}
+
+		GPUCompute->TickGPU(
+			GPUBoneLocations, GPUBonePrevLocations,
+			GPUBonePoseLocations, GPUBoneSettings,
+			NumActive, GetStepDeltaTime(), PredictionScale,
+			SkelCompMoveVector, SkelCompMoveRotation,
+			GravityInSimSpace);
+
+		// Read back results and apply stiffness + world move follow
+		const int32 EffectiveTargetFramerate = GetEffectiveTargetFramerate();
+		const float Exponent = EffectiveTargetFramerate * GetStepDeltaTime();
+		for (int32 i = 0; i < NumBones; ++i)
+		{
+			FKawaiiPhysicsModifyBone& Bone = ModifyBones[i];
+			if (Bone.bSkipSimulate || Bone.bBridgeDummy)
+			{
+				continue;
+			}
+
+			Bone.PrevPrevLocation = Bone.PrevLocation;
+			Bone.PrevLocation = Bone.Location;
+			Bone.Location = GPUBoneLocations[i];
+
+			// Apply stiffness (pull toward pose) — matches CPU path formula
+			if (Bone.ParentIndex >= 0 && ModifyBones.IsValidIndex(Bone.ParentIndex))
+			{
+				const FKawaiiPhysicsModifyBone& ParentBone = ModifyBones[Bone.ParentIndex];
+				ApplyStiffnessPull(Bone, ParentBone, Exponent);
+			}
+
+			// Apply world movement follow (ComponentSpace/WorldSpace non-BaseBoneSpace)
+			if (SimulationSpace != EKawaiiPhysicsSimulationSpace::BaseBoneSpace
+				&& TeleportType != ETeleportType::TeleportPhysics)
+			{
+				ApplyWorldMoveFollowNonBaseBone(Bone);
+			}
+		}
+	}
+	else
+	{
+	// CPU path: per-bone Simulate（Exponent は GetStepDeltaTime ベース。サブステップ時は TargetFramerate*FixedDt=1）
 	const int32 EffectiveTargetFramerate = GetEffectiveTargetFramerate();
 	const float Exponent = EffectiveTargetFramerate * GetStepDeltaTime();
 	for (FKawaiiPhysicsModifyBone& Bone : ModifyBones)
@@ -472,6 +561,7 @@ void FAnimNode_KawaiiPhysics::SimulateOnce(FComponentSpacePoseContext& Output,
 		}
 
 		Simulate(Bone, Scene, ComponentTransform, Exponent, SkelComp, Output);
+	}
 	}
 
 	// コリジョン専用モード: 全実ボーンのシミュレーション完了後、シミュレーション済みのLocation間にダミーを配置
@@ -2005,7 +2095,7 @@ void FAnimNode_KawaiiPhysics::Simulate(FKawaiiPhysicsModifyBone& Bone, const FSc
 			if (const auto ExForce = ExternalForces[i].GetMutablePtr<FKawaiiPhysics_ExternalForce>();
 				ExForce->bIsEnabled)
 			{
-				if (ExForce->ExternalForceSpace == EExternalForceSpace::BoneSpace)
+				if (ExForce->ExternalForceSpace == EKawaiiPhysicsSimulationSpace::BaseBoneSpace)
 				{
 					FTransform BoneTM = FTransform::Identity;
 					if (Bone.bDummy)
@@ -2233,16 +2323,16 @@ void FAnimNode_KawaiiPhysics::WarmUp(FComponentSpacePoseContext& Output, const F
 	// Transfer Motion: angular velocity of source bones creates external forces
 	if (bEnableTransferMotion && TransferMotionSources.Num() > 0)
 	{
-		const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
+		const FBoneContainer& TransferBoneContainer = Output.Pose.GetPose().GetBoneContainer();
 		for (FKawaiiPhysicsTransferMotionSource& Source : TransferMotionSources)
 		{
-			if (!Source.SourceBone.IsValidToEvaluate(BoneContainer))
+			if (!Source.SourceBoneRef.IsValidToEvaluate(TransferBoneContainer))
 			{
 				continue;
 			}
 
-			const FCompactPoseBoneIndex CompactIdx = BoneContainer.GetCompactPoseIndexFromSkeletonIndex(
-				Source.SourceBone.BoneIndex);
+			const FCompactPoseBoneIndex CompactIdx = TransferBoneContainer.GetCompactPoseIndexFromSkeletonIndex(
+				Source.SourceBoneRef.BoneIndex);
 			if (CompactIdx < 0)
 			{
 				continue;

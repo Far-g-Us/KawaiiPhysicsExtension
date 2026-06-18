@@ -14,20 +14,6 @@
 #include "KawaiiPhysicsExternalForce.generated.h"
 
 /**
- * Enum representing the space in which external forces are simulated.
- */
-UENUM(BlueprintType)
-enum class EExternalForceSpace : uint8
-{
-	/** Simulate in component space. Moving the entire skeletal mesh will have no affect on velocities */
-	ComponentSpace,
-	/** Simulate in world space. Moving the skeletal mesh will generate velocity changes */
-	WorldSpace,
-	/** Simulate in another bone space. Moving the entire skeletal mesh and individually modifying the base bone will have no affect on velocities */
-	BoneSpace,
-};
-
-/**
  * Enum representing the evaluation type for external force curves.
  */
 UENUM(BlueprintType)
@@ -78,7 +64,7 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce
 	/** The space in which the external force is simulated */
 	UPROPERTY(EditAnywhere, meta=(DisplayPriority=1, EditCondition=bCanSelectForceSpace, EditConditionHides),
 		Category="KawaiiPhysics|ExternalForce")
-	EExternalForceSpace ExternalForceSpace = EExternalForceSpace::WorldSpace;
+	EKawaiiPhysicsSimulationSpace ExternalForceSpace = EKawaiiPhysicsSimulationSpace::WorldSpace;
 
 	/** Range for randomizing the force scale */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(DisplayPriority=1), Category="KawaiiPhysics|ExternalForce")

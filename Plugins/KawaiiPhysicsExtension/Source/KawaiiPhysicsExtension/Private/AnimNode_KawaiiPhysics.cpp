@@ -31,6 +31,7 @@
 #endif
 
 #include "KawaiiPhysics.h"
+#include "KawaiiPhysicsGPUCompute.h"
 #include "AnimNode_KawaiiPhysicsInternal.h"
 #include "DrawDebugHelpers.h"
 
@@ -182,6 +183,13 @@ void FAnimNode_KawaiiPhysics::Initialize_AnyThread(const FAnimationInitializeCon
 	// For Avoiding Zero Divide in the first frame
 	DeltaTimeOld = 1.0f / static_cast<float>(GetEffectiveTargetFramerate());
 
+	// GPU compute: release old instance; will be recreated lazily in SimulateModifyBones
+	if (GPUCompute)
+	{
+		GPUCompute->Release();
+		GPUCompute = nullptr;
+	}
+
 	// サブステップ状態をリセット / Reset substep state
 	SubstepAccumulator = 0.0f;
 	bSubstepPoseInitialized = false;
@@ -240,7 +248,16 @@ void FAnimNode_KawaiiPhysics::UpdateInternal(const FAnimationUpdateContext& Cont
 void FAnimNode_KawaiiPhysics::GatherDebugData(FNodeDebugData& DebugData)
 {
 #if ENABLE_ANIM_DEBUG
-	// TODO
+	DebugData.AddDebugItem(TEXT("RootBone: ") + RootBone.BoneName.ToString());
+	DebugData.AddDebugItem(TEXT("ModifyBones: ") + FString::FromInt(ModifyBones.Num()));
+	DebugData.AddDebugItem(TEXT("Sleeping: ") + FString(bIsAsleep ? TEXT("Yes") : TEXT("No")));
+
+	const FString SpaceStr = SimulationSpace == EKawaiiPhysicsSimulationSpace::ComponentSpace
+		                         ? TEXT("ComponentSpace")
+		                         : SimulationSpace == EKawaiiPhysicsSimulationSpace::WorldSpace
+		                         ? TEXT("WorldSpace")
+		                         : TEXT("BaseBoneSpace");
+	DebugData.AddDebugItem(TEXT("SimSpace: ") + SpaceStr);
 #endif
 	Super::GatherDebugData(DebugData);
 }

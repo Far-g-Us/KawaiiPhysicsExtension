@@ -15,6 +15,11 @@
 
 void FKawaiiPhysics_ExternalForce::Initialize(const FAnimationInitializeContext& Context)
 {
+#if ENABLE_ANIM_DEBUG
+	BoneForceMap.Empty();
+#endif
+	RandomizedForceScale = 0.0f;
+	Force = FVector::Zero();
 }
 
 void FKawaiiPhysics_ExternalForce::PreApply(FAnimNode_KawaiiPhysics& Node,
@@ -37,8 +42,11 @@ void FKawaiiPhysics_ExternalForce::Apply(FKawaiiPhysicsModifyBone& Bone, FAnimNo
 
 void FKawaiiPhysics_ExternalForce::PostApply(FAnimNode_KawaiiPhysics& Node, FComponentSpacePoseContext& PoseContext)
 {
-	// One-shot forces are now removed by the caller after iteration to avoid
-	// invalidating the ExternalForces array during PostApply callbacks.
+	if (bIsOneShot)
+	{
+		bIsEnabled = false;
+		Force = FVector::Zero();
+	}
 }
 
 bool FKawaiiPhysics_ExternalForce::IsDebugEnabled(bool bInPersona)

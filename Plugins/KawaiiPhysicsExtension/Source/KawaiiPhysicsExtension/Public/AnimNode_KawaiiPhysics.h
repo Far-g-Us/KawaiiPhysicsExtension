@@ -374,6 +374,10 @@ struct KAWAIIPHYSICSEXTENSION_API FAnimNode_KawaiiPhysics : public FAnimNode_Ske
 		meta = (PinHiddenByDefault, DisplayName="Enable GPU Simulation (EXPERIMENTAL)"))
 	bool bEnableGPUSimulation = false;
 
+	/** GPU compute object for offloading Verlet integration. Created when bEnableGPUSimulation is true. */
+	UPROPERTY(Transient)
+	TObjectPtr<UKawaiiPhysicsGPUCompute> GPUCompute = nullptr;
+
 	// --- Morph Target Driver ---
 
 	/**

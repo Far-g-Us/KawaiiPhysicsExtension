@@ -100,18 +100,7 @@ void FKawaiiPhysics_ExternalForce_Curve::PreApply(FAnimNode_KawaiiPhysics& Node,
 		Force *= RandomizedForceScale;
 	}
 
-	// TODO : Merge EExternalForceSpace and EKawaiiPhysicsSimulationSpace
-	EKawaiiPhysicsSimulationSpace From = EKawaiiPhysicsSimulationSpace::ComponentSpace;
-	if (ExternalForceSpace == EExternalForceSpace::WorldSpace)
-	{
-		From = EKawaiiPhysicsSimulationSpace::WorldSpace;
-	}
-	else if (ExternalForceSpace == EExternalForceSpace::BoneSpace)
-	{
-		From = EKawaiiPhysicsSimulationSpace::BaseBoneSpace;
-	}
-
-	Force = Node.ConvertSimulationSpaceVector(PoseContext, From,
+	Force = Node.ConvertSimulationSpaceVector(PoseContext, ExternalForceSpace,
 	                                          Node.SimulationSpace, Force);
 }
 
@@ -131,7 +120,7 @@ void FKawaiiPhysics_ExternalForce_Curve::Apply(FKawaiiPhysicsModifyBone& Bone, F
 		ForceRate = Curve->Eval(Bone.LengthRateFromRoot);
 	}
 
-	if (ExternalForceSpace == EExternalForceSpace::BoneSpace)
+	if (ExternalForceSpace == EKawaiiPhysicsSimulationSpace::BaseBoneSpace)
 	{
 		const FVector BoneForce = BoneTM.TransformVector(Force);
 		Bone.Location += BoneForce * ForceRate * Node.GetStepDeltaTime();

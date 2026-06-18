@@ -124,6 +124,11 @@ void FAnimNode_KawaiiPhysics::InitSyncBone(FComponentSpacePoseContext& Output, c
 			{
 				Target.UpdateScaleByLengthRate(ScaleCurve);
 			}
+			TargetRoot.bScaleInitialized = true;
+		}
+		else
+		{
+			TargetRoot.bScaleInitialized = false;
 		}
 	}
 }
@@ -238,15 +243,17 @@ void FAnimNode_KawaiiPhysics::ApplySyncBones(FComponentSpacePoseContext& Output,
 		// Apply to Targets
 		for (auto& TargetRoot : SyncBone.TargetRoots)
 		{
-			// Update Alpha by Length Rate & Curve
-			// TODO : Need flag to optimize for skip updating Scale after InitSyncBone
-			if (const FRichCurve* ScaleCurve = TargetRoot.ScaleCurveByBoneLengthRate.GetRichCurveConst();
-				ScaleCurve && !ScaleCurve->IsEmpty())
+			// Update Alpha by Length Rate & Curve (skip if already initialized)
+			if (!TargetRoot.bScaleInitialized)
 			{
-				TargetRoot.UpdateScaleByLengthRate(ScaleCurve);
-				for (auto& Target : TargetRoot.ChildTargets)
+				if (const FRichCurve* ScaleCurve = TargetRoot.ScaleCurveByBoneLengthRate.GetRichCurveConst();
+					ScaleCurve && !ScaleCurve->IsEmpty())
 				{
-					Target.UpdateScaleByLengthRate(ScaleCurve);
+					TargetRoot.UpdateScaleByLengthRate(ScaleCurve);
+					for (auto& Target : TargetRoot.ChildTargets)
+					{
+						Target.UpdateScaleByLengthRate(ScaleCurve);
+					}
 				}
 			}
 

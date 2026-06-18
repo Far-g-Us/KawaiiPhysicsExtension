@@ -4,7 +4,7 @@ Fork of [KawaiiPhysics](https://github.com/pafuhana1213/KawaiiPhysics) for **Unr
 
 > **Original plugin**: [pafuhana1213/KawaiiPhysics](https://github.com/pafuhana1213/KawaiiPhysics)  
 > **This fork**: [Far-g-Us/KawaiiPhysicsExtension](https://github.com/Far-g-Us/KawaiiPhysicsExtension)  
-> **Version**: 1.31.1 | **UE 5.5** | **Author: A1ZZM**
+> **Version**: 1.31.1 | **UE 5.5** | **Author: Far-g-Us**
 
 ---
 

@@ -47,39 +47,40 @@ FText UAnimGraphNode_KawaiiPhysics::GetNodeTitle(ENodeTitleType::Type TitleType)
 	{
 		return GetControllerDescription();
 	}
-	// @TODO: the bone can be altered in the property editor, so we have to 
+	// @TODO: the bone can be altered in the property editor, so we have to
 	//        choose to mark this dirty when that happens for this to properly work
-	//if (!CachedNodeTitles.IsTitleCached(TitleType, this))
-
-	FFormatNamedArguments Args;
-	Args.Add(TEXT("ControllerDescription"), GetControllerDescription());
-	Args.Add(TEXT("RootBoneName"), FText::FromName(Node.RootBone.BoneName));
-	Args.Add(TEXT("Tag"), FText::FromString(Node.KawaiiPhysicsTag.ToString()));
-
-	// FText::Format() is slow, so we cache this to save on performance
-	if (TitleType == ENodeTitleType::ListView || TitleType == ENodeTitleType::MenuTitle)
+	if (!CachedNodeTitles.IsTitleCached(TitleType, this))
 	{
-		const FText Title = Node.KawaiiPhysicsTag.IsValid()
-			                    ? FText::Format(
-				                    LOCTEXT("AnimGraphNode_KawaiiPhysics_ListTitle",
-				                            "{ControllerDescription} - Root: {RootBoneName} - Tag: {Tag}"), Args)
-			                    : FText::Format(
-				                    LOCTEXT("AnimGraphNode_KawaiiPhysics_ListTitle",
-				                            "{ControllerDescription} - Root: {RootBoneName}"), Args);
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("ControllerDescription"), GetControllerDescription());
+		Args.Add(TEXT("RootBoneName"), FText::FromName(Node.RootBone.BoneName));
+		Args.Add(TEXT("Tag"), FText::FromString(Node.KawaiiPhysicsTag.ToString()));
 
-		CachedNodeTitles.SetCachedTitle(TitleType, Title, this);
-	}
-	else
-	{
-		const FText Title = Node.KawaiiPhysicsTag.IsValid()
-			                    ? FText::Format(
-				                    LOCTEXT("AnimGraphNode_KawaiiPhysics_Title",
-				                            "{ControllerDescription}\nRoot: {RootBoneName}\nTag:  {Tag} "), Args)
-			                    : FText::Format(
-				                    LOCTEXT("AnimGraphNode_KawaiiPhysics_Title",
-				                            "{ControllerDescription}\nRoot: {RootBoneName}"), Args);
+		// FText::Format() is slow, so we cache this to save on performance
+		if (TitleType == ENodeTitleType::ListView || TitleType == ENodeTitleType::MenuTitle)
+		{
+			const FText Title = Node.KawaiiPhysicsTag.IsValid()
+				                    ? FText::Format(
+					                    LOCTEXT("AnimGraphNode_KawaiiPhysics_ListTitle",
+					                            "{ControllerDescription} - Root: {RootBoneName} - Tag: {Tag}"), Args)
+				                    : FText::Format(
+					                    LOCTEXT("AnimGraphNode_KawaiiPhysics_ListTitle",
+					                            "{ControllerDescription} - Root: {RootBoneName}"), Args);
 
-		CachedNodeTitles.SetCachedTitle(TitleType, Title, this);
+			CachedNodeTitles.SetCachedTitle(TitleType, Title, this);
+		}
+		else
+		{
+			const FText Title = Node.KawaiiPhysicsTag.IsValid()
+				                    ? FText::Format(
+					                    LOCTEXT("AnimGraphNode_KawaiiPhysics_Title",
+					                            "{ControllerDescription}\nRoot: {RootBoneName}\nTag:  {Tag} "), Args)
+				                    : FText::Format(
+					                    LOCTEXT("AnimGraphNode_KawaiiPhysics_Title",
+					                            "{ControllerDescription}\nRoot: {RootBoneName}"), Args);
+
+			CachedNodeTitles.SetCachedTitle(TitleType, Title, this);
+		}
 	}
 	return CachedNodeTitles[TitleType];
 }

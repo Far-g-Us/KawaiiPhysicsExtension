@@ -62,8 +62,4 @@ private:
 
 	/** Number of bones the buffers were allocated for */
 	int32 AllocatedBoneCount = 0;
-
-	// GPU buffers would be here in a full implementation
-	// TRefCountPtr<FRHIStructuredBuffer> BoneBuffer;
-	// TRefCountPtr<FRHIUnorderedAccessView> BoneBufferUAV;
 };

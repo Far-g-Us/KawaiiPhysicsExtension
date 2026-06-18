@@ -559,7 +559,7 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysicsTransferMotionSource
 
 	/** Source bone whose movement creates the force */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TransferMotion")
-	FBoneReference SourceBone;
+	FName SourceBoneName;
 
 	/** Influence strength (0-1) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "TransferMotion",
@@ -571,7 +571,8 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysicsTransferMotionSource
 		meta = (ClampMin = "0"))
 	float MaxAngularVelocity = 360.0f;
 
-	// Internal state (not serialized)
+	// Transient runtime state — not serialized
+	FBoneReference SourceBoneRef;
 	FQuat PrevRotation = FQuat::Identity;
 	bool bInitialized = false;
 };

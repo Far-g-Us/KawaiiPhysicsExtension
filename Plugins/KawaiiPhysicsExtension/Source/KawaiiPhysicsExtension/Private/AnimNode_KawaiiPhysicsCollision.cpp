@@ -13,6 +13,7 @@
 #include "Runtime/Launch/Resources/Version.h"
 #include "SceneInterface.h"
 #include "PhysicsEngine/PhysicsAsset.h"
+#include "Engine/StaticMesh.h"
 #include "StaticMeshResources.h"
 #include "Rendering/PositionVertexBuffer.h"
 #include "Engine/World.h"

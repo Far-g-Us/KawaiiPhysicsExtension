@@ -17,7 +17,7 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce_Wind : public FKa
 	FKawaiiPhysics_ExternalForce_Wind()
 	{
 		bCanSelectForceSpace = false;
-		ExternalForceSpace = EExternalForceSpace::WorldSpace;
+		ExternalForceSpace = EKawaiiPhysicsSimulationSpace::WorldSpace;
 	}
 
 	/**

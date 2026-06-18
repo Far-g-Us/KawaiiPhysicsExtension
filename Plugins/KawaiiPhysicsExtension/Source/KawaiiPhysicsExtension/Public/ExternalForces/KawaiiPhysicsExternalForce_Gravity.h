@@ -17,7 +17,7 @@ struct KAWAIIPHYSICSEXTENSION_API FKawaiiPhysics_ExternalForce_Gravity : public 
 	FKawaiiPhysics_ExternalForce_Gravity()
 	{
 		bCanSelectForceSpace = false;
-		ExternalForceSpace = EExternalForceSpace::WorldSpace;
+		ExternalForceSpace = EKawaiiPhysicsSimulationSpace::WorldSpace;
 	}
 
 	/**

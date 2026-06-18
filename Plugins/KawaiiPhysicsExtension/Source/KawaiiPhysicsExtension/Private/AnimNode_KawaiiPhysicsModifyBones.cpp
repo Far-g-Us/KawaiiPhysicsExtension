@@ -76,7 +76,8 @@ void FAnimNode_KawaiiPhysics::InitializeBoneReferences(const FBoneContainer& Req
 
 	for (auto& Source : TransferMotionSources)
 	{
-		Source.SourceBone.Initialize(RequiredBones);
+		Source.SourceBoneRef.BoneName = Source.SourceBoneName;
+		Source.SourceBoneRef.Initialize(RequiredBones);
 		Source.bInitialized = false;
 	}
 }
