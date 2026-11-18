@@ -6,6 +6,9 @@ Fork of [KawaiiPhysics](https://github.com/pafuhana1213/KawaiiPhysics) for **Unr
 > **This fork**: [Far-g-Us/KawaiiPhysicsExtension](https://github.com/Far-g-Us/KawaiiPhysicsExtension)  
 > **Version**: 1.31.1 | **UE 5.5** | **Author: Far-g-Us**
 
+## Godot-порт
+Godot 4.7-версия аддона: `addons/kawaii_physics_extension/` — [README (RU)](addons/kawaii_physics_extension/README.md), [API (EN)](addons/kawaii_physics_extension/README_EN.md), [CHANGELOG](addons/kawaii_physics_extension/CHANGELOG.md).
+
 ---
 
 ## Что нового в KawaiiPhysicsExtension
