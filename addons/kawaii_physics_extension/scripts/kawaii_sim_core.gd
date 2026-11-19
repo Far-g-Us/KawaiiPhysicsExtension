@@ -138,6 +138,25 @@ static func adjust_by_capsule_limit(loc: Vector3, bone_radius: float, capsule_lo
 	return loc
 
 
+static func adjust_by_box_limit(pos: Vector3, radius: float, box_loc: Vector3, box_rot: Basis, half: Vector3) -> Vector3:
+	var local := box_rot.inverse() * (pos - box_loc)
+	for i in 3:
+		if absf(local[i]) >= half[i] + radius:
+			return pos
+	var best_axis := -1
+	var best_pen := INF
+	for i in 3:
+		var pen: float = half[i] + radius - absf(local[i])
+		if pen < best_pen:
+			best_pen = pen
+			best_axis = i
+	if best_axis < 0:
+		return pos
+	var s := 1.0 if local[best_axis] >= 0.0 else -1.0
+	local[best_axis] = s * (half[best_axis] + radius)
+	return box_loc + box_rot * local
+
+
 static func adjust_by_plane_limit(loc: Vector3, prev_loc: Vector3, bone_radius: float,
 		plane_point: Vector3, plane_normal: Vector3) -> Vector3:
 	var plane := Plane(plane_normal, plane_point)

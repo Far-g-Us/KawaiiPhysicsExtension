@@ -1,15 +1,23 @@
+@tool
 @icon("res://addons/kawaii_physics_extension/icon.svg")
 class_name KawaiiPhysics
 extends SkeletonModifier3D
 
 var _core: GDScript = null
 var _scripts_failed := false
+var sleeping := false
+var lod_enabled := true
+var _sleep_counter := 0
+var step_usec_ema := 0.0
 var _elapsed := 0.0
+var last_substeps := 1
 var last_step_usec := 0
 var _settings_script: GDScript = null
 var _sphere_limit_script: GDScript = null
 var _capsule_limit_script: GDScript = null
 var _plane_limit_script: GDScript = null
+var _box_limit_script: GDScript = null
+var _post_script: GDScript = null
 
 
 func _ensure_scripts() -> void:
@@ -30,18 +38,25 @@ func _ensure_scripts() -> void:
 		_sphere_limit_script = load(base + "/kawaii_sphere_limit.gd")
 		_capsule_limit_script = load(base + "/kawaii_capsule_limit.gd")
 		_plane_limit_script = load(base + "/kawaii_plane_limit.gd")
+		_box_limit_script = load(base + "/kawaii_box_limit.gd")
+		_post_script = load(base + "/kawaii_physics_post.gd")
+		_debug_draw_script = load(base + "/kawaii_debug_draw.gd")
 		break
 	if _core == null:
 		_scripts_failed = true
 		push_error("KawaiiPhysics: scripts not found (addons folder renamed?)")
 		return
-	if settings == null and _settings_script != null:
+	if settings == null and _settings_script != null and not Engine.is_editor_hint():
 		settings = _settings_script.new()
 const EPS := 1e-6
 
-enum SimSpace { COMPONENT, WORLD }
+enum SimSpace { COMPONENT, WORLD, BASE_NODE }
 
 @export var simulation_space: SimSpace = SimSpace.COMPONENT
+@export var ragdoll_blend: float = 0.0
+@export var ragdoll_source: NodePath = NodePath("")
+@export var base_node: NodePath = NodePath("")
+@export_group("Кости")
 @export var root_bone: StringName = &"":
 	set(v):
 		root_bone = v
@@ -54,9 +69,13 @@ enum SimSpace { COMPONENT, WORLD }
 	set(v):
 		additional_root_bones = v
 		_chain_dirty = true
+@export_group("Физика")
+@export var preset: KawaiiPreset = null
 @export var settings: KawaiiSettings
+@export var constraint_leaf_first: bool = true
 @export var bone_constraints: Array[KawaiiBoneConstraint] = []
-@export var sync_bones: Array = []
+@export var sync_bones: Array[KawaiiSyncBone] = []
+@export var bone_subdivision_collision_only: bool = false
 @export_range(0, 10) var bone_subdivision_count: int = 0:
 	set(v):
 		bone_subdivision_count = v
@@ -66,25 +85,49 @@ enum SimSpace { COMPONENT, WORLD }
 		dummy_bone_length = v
 		_chain_dirty = true
 @export_range(1, 240) var target_framerate: int = 60
+@export_range(0.0, 0.2) var max_substep_dt: float = 0.0
+@export_range(1, 8) var max_substeps: int = 4
+@export_range(0.0, 2.0) var gravity_scale: float = 1.0
+@export_range(0.0, 2.0) var prediction_scale: float = 0.0
 @export var gravity: Vector3 = Vector3(0, -9.8, 0)
+@export_group("Внешние силы")
 @export var wind: Resource = null
 @export_range(0.0, 10.0) var wind_scale: float = 1.0
-@export var wind_zones: Array = []
+@export var wind_zones: Array[KawaiiWindZone] = []
+@export var external_forces: Array[KawaiiExternalForce] = []
+@export var mesh_collisions: Array[KawaiiMeshCollision] = []
+@export var planar_mode: bool = false
+@export var plane_normal: Vector3 = Vector3(0.0, 0.0, 1.0)
 @export var constant_force: Vector3 = Vector3.ZERO
+@export_group("Телепорт и сон")
 @export var teleport_distance_threshold: float = 3.0
 @export var teleport_rotation_threshold_deg: float = 10.0
 @export var warmup_frames: int = 0
-@export var sphere_limits: Array = []
-@export var capsule_limits: Array = []
-@export var plane_limits: Array = []
+@export_group("Коллизии")
+@export_subgroup("Лимиты")
+@export var sphere_limits: Array[KawaiiSphereLimit] = []
+@export var capsule_limits: Array[KawaiiCapsuleLimit] = []
+@export var plane_limits: Array[KawaiiPlaneLimit] = []
+@export var box_limits: Array[KawaiiBoxLimit] = []
+@export_subgroup("Мир")
 @export var world_collision_enabled: bool = false
 @export_flags_3d_physics var world_collision_mask: int = 1
 @export_range(0.0, 0.2) var world_collision_margin: float = 0.005
 @export_range(0.0, 4.0) var world_collision_radius_scale: float = 1.0
+@export var world_collision_ccd: bool = false
+@export var world_collision_exclude_group: StringName = &""
+@export_subgroup("Self-collision")
+@export var shared_collision_enabled: bool = false
 @export var self_collision_enabled: bool = false
 @export_range(0.0, 10.0) var self_collision_min_distance: float = 0.01
 @export_range(0.0, 10.0) var self_collision_radius_multiplier: float = 1.0
 @export_range(0.0, 1.0) var self_collision_push_split_ratio: float = 0.5
+@export_subgroup("Сон")
+@export var sleep_enabled: bool = false
+@export var sleep_motion_threshold: float = 0.002
+@export_range(1, 120) var sleep_frames: int = 5
+@export_group("Отладка")
+@export var editor_preview: bool = false
 @export var debug_draw: bool = false
 
 var _bones: Array = []
@@ -99,14 +142,21 @@ var _prev_origin: Vector3 = Vector3.ZERO
 var _prev_rot: Quaternion = Quaternion.IDENTITY
 var _has_prev: bool = false
 var _prev_delta: float = 0.0
+var _prev_base_origin: Vector3 = Vector3.ZERO
+var _prev_base_rot: Quaternion = Quaternion.IDENTITY
+var _has_prev_base: bool = false
 var _pending_warmup: int = 0
 var _in_step: bool = false
 var _resolved_spheres: Array = []
 var _resolved_capsules: Array = []
 var _resolved_planes: Array = []
-var _debug_mesh_instance: MeshInstance3D = null
-var _debug_mesh: ImmediateMesh = null
-var _debug_material: StandardMaterial3D = null
+var _resolved_boxes: Array = []
+var _debug: RefCounted = null
+var _tool_settings: KawaiiSettings = null
+var _prev_frame_dt: float = 0.0
+var _debug_draw_script: GDScript = null
+
+static var _shared_registry: Array = []
 
 
 func _init() -> void:
@@ -114,8 +164,16 @@ func _init() -> void:
 
 
 func _ready() -> void:
+	if Engine.is_editor_hint():
+		if editor_preview:
+			_ensure_scripts()
+		return
 	add_to_group("kawaii_physics")
+	if not _shared_registry.has(self):
+		_shared_registry.append(self)
 	_ensure_scripts()
+	if preset != null:
+		apply_preset(preset)
 
 
 func _process_modification_with_delta(delta: float) -> void:
@@ -146,7 +204,7 @@ func _process_modification_with_delta(delta: float) -> void:
 		_in_step = false
 		return
 	_sync_settings()
-	if simulation_space == SimSpace.WORLD:
+	if simulation_space != SimSpace.COMPONENT:
 		for b in _bones:
 			b.world_damp_loc = 0.0
 			b.world_damp_rot = 0.0
@@ -166,18 +224,29 @@ func _process_modification_with_delta(delta: float) -> void:
 		if teleported:
 			move_loc = Vector3.ZERO
 			move_rot = Quaternion.IDENTITY
+		elif prediction_scale > 0.0:
+			move_loc *= (1.0 + prediction_scale)
 	if teleported:
 		_reset_to_pose(sk)
 		_has_prev = false
+		_has_prev_base = false
+	if simulation_space == SimSpace.BASE_NODE and _has_prev and _has_prev_base:
+		var base := get_node_or_null(base_node) as Node3D
+		if base != null:
+			var bnow := base.global_transform
+			move_loc = bnow.affine_inverse() * _prev_base_origin
+			move_rot = Quaternion(bnow.basis).inverse() * _prev_base_rot
 	var skel_basis_inv := sk.global_transform.affine_inverse().basis
-	var base_force: Vector3 = gravity + constant_force
+	var base_force: Vector3 = gravity * gravity_scale + constant_force
 	var has_air: bool = false
 	if wind != null and is_instance_valid(wind) and wind.has_method("sample") and bool(wind.get("enabled")):
 		has_air = true
 	if not wind_zones.is_empty():
 		has_air = true
+	if not external_forces.is_empty():
+		has_air = true
 	var bone_forces: Array = []
-	if has_air and not is_zero_approx(wind_scale):
+	if has_air:
 		_elapsed += delta
 		for b in _bones:
 			var wpos: Vector3 = sk.global_transform * (b.loc as Vector3)
@@ -187,6 +256,9 @@ func _process_modification_with_delta(delta: float) -> void:
 			for z in wind_zones:
 				if z != null and is_instance_valid(z) and z.has_method("sample") and bool(z.get("enabled")):
 					wf += (z.call("sample", _elapsed, wpos) as Vector3) * wind_scale
+			for f in external_forces:
+				if f != null and is_instance_valid(f) and f.has_method("sample") and bool(f.get("enabled")):
+					wf += f.call("sample", _elapsed, wpos) as Vector3
 			bone_forces.append(skel_basis_inv * (base_force + wf))
 	var gravity_sim := skel_basis_inv * base_force
 	var dt := delta
@@ -194,6 +266,24 @@ func _process_modification_with_delta(delta: float) -> void:
 	if dt_old <= EPS:
 		dt_old = 1.0 / float(target_framerate)
 	_snapshot_poses(sk)
+	if sleeping:
+		var skel_moved: bool = move_loc.length() > sleep_motion_threshold or absf(move_rot.get_angle()) > 0.002
+		var pose_moved := false
+		for b in _bones:
+			if b.is_dummy:
+				continue
+			if (b.pose_loc as Vector3).distance_to(b.loc as Vector3) > sleep_motion_threshold * 4.0:
+				pose_moved = true
+				break
+		if not skel_moved and not pose_moved:
+			_prev_origin = now_origin
+			_prev_rot = now_rot
+			_prev_delta = delta
+			last_step_usec = 0
+			_in_step = false
+			return
+		sleeping = false
+		_sleep_counter = 0
 	if _pending_warmup > 0:
 		var wdt := 1.0 / float(target_framerate)
 		for i in range(_pending_warmup):
@@ -202,27 +292,70 @@ func _process_modification_with_delta(delta: float) -> void:
 			_apply_self_collision()
 			_apply_angle_limits()
 			_core.restore_lengths(_bones)
-			_apply_bone_constraints()
+			_apply_bone_constraints(sk)
 			_core.restore_lengths(_bones)
-			_apply_world_collision(sk)
+			_apply_post_steps(sk)
 		_pending_warmup = 0
-	_core.simulate_step(_bones, dt_old, dt, gravity_sim, move_loc, move_rot, float(target_framerate), bone_forces)
-	_apply_collision_limits(sk)
-	_apply_self_collision()
-	_apply_angle_limits()
-	_core.restore_lengths(_bones)
-	_apply_bone_constraints()
-	_core.restore_lengths(_bones)
-	_apply_world_collision(sk)
+	var substeps := 1
+	if max_substep_dt > 0.0 and dt > max_substep_dt:
+		substeps = clampi(int(ceil(dt / max_substep_dt)), 1, max_substeps)
+	last_substeps = substeps
+	var sdt := dt / float(substeps)
+	var sdt_old := dt_old if substeps == 1 else sdt
+	var sub_move: Vector3 = move_loc / float(substeps)
+	var sub_rot: Quaternion = move_rot if substeps == 1 else Quaternion.IDENTITY.slerp(move_rot, 1.0 / float(substeps))
+	for si in range(substeps):
+		var old_dt := sdt_old if si == 0 else sdt
+		_core.simulate_step(_bones, old_dt, sdt, gravity_sim, sub_move, sub_rot, float(target_framerate), bone_forces)
+		_apply_collision_limits(sk)
+		_apply_self_collision()
+		_apply_angle_limits()
+		_core.restore_lengths(_bones)
+		_apply_bone_constraints(sk)
+		_core.restore_lengths(_bones)
+		_apply_post_steps(sk)
 	_write_back(sk, get_influence())
-	_apply_sync_bones(sk)
+	if _post_script != null:
+		_post_script.apply_sync(sk, _bones, sync_bones, _written_bones)
 	_update_debug_draw(sk)
 	_prev_origin = now_origin
 	_prev_rot = now_rot
-	_prev_delta = dt
+	_prev_delta = sdt
+	_prev_frame_dt = dt
 	_has_prev = true
+	if simulation_space == SimSpace.BASE_NODE:
+		var base_end := get_node_or_null(base_node) as Node3D
+		if base_end != null:
+			_prev_base_origin = base_end.global_position
+			_prev_base_rot = Quaternion(base_end.global_basis)
+			_has_prev_base = true
+	if sleep_enabled:
+		var max_motion := 0.0
+		for b in _bones:
+			max_motion = maxf(max_motion, (b.loc as Vector3).distance_to(b.prev_loc as Vector3))
+		if max_motion < sleep_motion_threshold:
+			_sleep_counter += 1
+			if _sleep_counter >= sleep_frames:
+				sleeping = true
+		else:
+			_sleep_counter = 0
 	_in_step = false
 	last_step_usec = Time.get_ticks_usec() - t0
+	step_usec_ema = lerpf(step_usec_ema, float(last_step_usec), 0.2) if step_usec_ema > 0.0 else float(last_step_usec)
+
+
+func step_manual(delta: float) -> void:
+	if not lod_enabled or _in_step or delta <= 0.0:
+		return
+	if settings == null and _settings_script != null:
+		if _tool_settings == null:
+			_tool_settings = _settings_script.new()
+	_process_modification_with_delta(delta)
+
+
+func _process(delta: float) -> void:
+	if Engine.is_editor_hint() and editor_preview:
+		step_manual(delta)
 
 
 func _skeleton_changed(old_skeleton: Skeleton3D, new_skeleton: Skeleton3D) -> void:
@@ -236,17 +369,48 @@ func _skeleton_changed(old_skeleton: Skeleton3D, new_skeleton: Skeleton3D) -> vo
 
 
 func _exit_tree() -> void:
+	_shared_registry.erase(self)
 	_unwrite_override()
-	if _debug_mesh_instance != null and is_instance_valid(_debug_mesh_instance):
-		_debug_mesh_instance.free()
-	_debug_mesh_instance = null
-	_debug_mesh = null
-	_debug_material = null
+	if _debug != null:
+		_debug.free_nodes()
+	_debug = null
 	_skeleton = null
 	_bones = []
 
 
+func add_impulse(impulse: Vector3, bone: StringName = &"", falloff: bool = true) -> void:
+	if impulse.length_squared() <= 1e-12:
+		return
+	sleeping = false
+	_sleep_counter = 0
+	var dt: float = 1.0 / float(target_framerate)
+	if _prev_frame_dt > 1e-5:
+		dt = _prev_frame_dt
+	if bone != &"":
+		var ci: int = int(_name_to_chain.get(String(bone), -1))
+		if ci >= 0 and ci < _bones.size():
+			_bones[ci].prev_loc = (_bones[ci].prev_loc as Vector3) - impulse * dt
+		return
+	var n: int = _bones.size()
+	for i in range(n):
+		var b: Dictionary = _bones[i]
+		if b.is_dummy:
+			continue
+		var w := 1.0
+		if falloff and n > 1:
+			w = 1.0 - 0.7 * float(i) / float(n - 1)
+		b.prev_loc = (b.prev_loc as Vector3) - impulse * dt * w
+
+
+func apply_preset(p: Resource) -> void: if p is KawaiiPreset: (p as KawaiiPreset).apply_to(self)
+
+
+func wake() -> void: sleeping = false; _sleep_counter = 0
+
+
 func reset_dynamics() -> void:
+	sleeping = false
+	_sleep_counter = 0
 	_has_prev = false
 	_prev_delta = 0.0
 	_pending_warmup = warmup_frames
@@ -254,20 +418,7 @@ func reset_dynamics() -> void:
 		_reset_to_pose(_skeleton)
 
 
-func get_chain_center() -> Vector3:
-	var sk := _resolve_skeleton()
-	if sk == null or _bones.is_empty():
-		return global_position
-	var sum := Vector3.ZERO
-	var count := 0
-	for b in _bones:
-		if b.is_dummy:
-			continue
-		sum += sk.global_transform * (b.loc as Vector3)
-		count += 1
-	if count == 0:
-		return global_position
-	return sum / float(count)
+func get_chain_center() -> Vector3: return _post_script.chain_center(_resolve_skeleton(), _bones, global_position) if _post_script != null else global_position
 
 
 func _resolve_skeleton() -> Skeleton3D:
@@ -414,7 +565,8 @@ func _subdivide_bones() -> void:
 		if child_i < 0:
 			continue
 		var child: Dictionary = _bones[child_i]
-		var prev_new: int = remap[ci]
+		var real_parent_new: int = remap[ci]
+		var prev_new: int = real_parent_new
 		for k in range(1, count + 1):
 			var t := float(k) / float(count + 1)
 			var d: Dictionary = b.duplicate(true)
@@ -424,6 +576,9 @@ func _subdivide_bones() -> void:
 			d.sub_t = t
 			d.edge_a = int(b.index)
 			d.edge_b = int(child.index)
+			d.collision_only = bone_subdivision_collision_only
+			d.edge_p_ci = real_parent_new
+			d.edge_child_old = child_i
 			d.parent_idx = prev_new
 			d.pose_loc = (b.pose_loc as Vector3).lerp(child.pose_loc as Vector3, t)
 			d.pose_rot = b.pose_rot
@@ -435,6 +590,9 @@ func _subdivide_bones() -> void:
 			new_bones.append(d)
 		pending[child_i] = prev_new
 	_bones = new_bones
+	for b in _bones:
+		if b.is_dummy and b.has("edge_child_old"):
+			b.edge_c_ci = remap[int(b.edge_child_old)]
 	_name_to_chain = {}
 	for ci in range(_bones.size()):
 		var nb: Dictionary = _bones[ci]
@@ -485,24 +643,28 @@ func _snapshot_poses(sk: Skeleton3D, seed_all: bool = false) -> void:
 
 
 func _sync_settings() -> void:
-	if settings == null or not (settings is KawaiiSettings):
+	var eff: KawaiiSettings = settings if settings != null else _tool_settings
+	if eff == null and _settings_script != null and Engine.is_editor_hint():
+		_tool_settings = _settings_script.new()
+		eff = _tool_settings
+	if eff == null or not (eff is KawaiiSettings):
 		return
 	var count: int = _bones.size()
 	for i in range(count):
 		var b: Dictionary = _bones[i]
 		var t: float = 0.0 if count <= 1 else float(i) / float(count - 1)
-		var stiff: float = float(settings.stiffness)
-		var damp: float = float(settings.damping)
-		if settings.stiffness_curve != null:
-			stiff *= settings.stiffness_curve.sample(t)
-		if settings.damping_curve != null:
-			damp *= settings.damping_curve.sample(t)
+		var stiff: float = float(eff.stiffness)
+		var damp: float = float(eff.damping)
+		if eff.stiffness_curve != null:
+			stiff *= eff.stiffness_curve.sample(t)
+		if eff.damping_curve != null:
+			damp *= eff.damping_curve.sample(t)
 		b.damping = damp
 		b.stiffness = stiff
-		b.world_damp_loc = settings.world_damping_location
-		b.world_damp_rot = settings.world_damping_rotation
-		b.radius = settings.collision_radius
-		b.limit_angle_deg = settings.limit_angle_deg
+		b.world_damp_loc = eff.world_damping_location
+		b.world_damp_rot = eff.world_damping_rotation
+		b.radius = eff.collision_radius
+		b.limit_angle_deg = eff.limit_angle_deg
 
 
 func _apply_angle_limits() -> void:
@@ -559,10 +721,17 @@ func _limit_rot(base_rot: Quaternion, offset_deg: Vector3) -> Quaternion:
 		deg_to_rad(offset_deg.x), deg_to_rad(offset_deg.y), deg_to_rad(offset_deg.z)))
 
 
-func _apply_bone_constraints() -> void:
+func _apply_bone_constraints(sk: Skeleton3D) -> void:
 	if bone_constraints.is_empty():
 		return
+	var order: Array = []
 	for c in bone_constraints:
+		if c != null and is_instance_valid(c):
+			order.append(c)
+	if constraint_leaf_first:
+		order.sort_custom(func(a: Resource, b: Resource) -> bool:
+			return _post_script.constraint_depth(_name_to_chain, _bones, a) > _post_script.constraint_depth(_name_to_chain, _bones, b))
+	for c in order:
 		if c == null or not is_instance_valid(c) or not bool(c.enabled):
 			continue
 		var ia: int = int(_name_to_chain.get(String(c.bone_a), -1))
@@ -584,6 +753,28 @@ func _apply_bone_constraints() -> void:
 		b.loc = lb - dir * err * k
 		a.prev_loc = (a.prev_loc as Vector3).lerp(a.loc, 0.2)
 		b.prev_loc = (b.prev_loc as Vector3).lerp(b.loc, 0.2)
+		if world_collision_enabled and int(c.subdivision_count) > 0 and is_inside_tree():
+			var space := get_world_3d().direct_space_state
+			if space != null and _post_script != null:
+				_post_script.apply_bridge(sk, space, _bones, ia, ib, int(c.subdivision_count), float(c.feedback_scale), world_collision_mask, world_collision_margin, world_collision_radius_scale)
+
+
+func _apply_box_limits() -> void: if _post_script != null: _post_script.apply_box_limits(_bones, _core, _resolved_boxes)
+
+
+func _update_collision_only_dummies() -> void:
+	for b in _bones:
+		if not b.is_dummy or not bool(b.get("collision_only", false)):
+			continue
+		var ep: int = int(b.get("edge_p_ci", -1))
+		var ec: int = int(b.get("edge_c_ci", -1))
+		if ep < 0 or ec < 0 or ep >= _bones.size() or ec >= _bones.size():
+			continue
+		var t: float = float(b.get("sub_t", 0.5))
+		var pa: Vector3 = _bones[ep].loc
+		var pb: Vector3 = _bones[ec].loc
+		b.loc = pa.lerp(pb, t)
+		b.prev_loc = b.loc
 
 
 func _apply_world_collision(sk: Skeleton3D) -> void:
@@ -603,6 +794,8 @@ func _apply_world_collision(sk: Skeleton3D) -> void:
 		owner_node = owner_node.get_parent()
 	var skel_xform := sk.global_transform
 	var skel_inv := skel_xform.affine_inverse()
+	if world_collision_ccd and _post_script != null:
+		_post_script.apply_ccd(sk, space, _bones, exclude, world_collision_mask, world_collision_margin, world_collision_radius_scale, world_collision_exclude_group)
 	for b in _bones:
 		if b.parent_idx < 0:
 			continue
@@ -622,10 +815,23 @@ func _apply_world_collision(sk: Skeleton3D) -> void:
 		var hit := space.intersect_ray(query)
 		if hit.is_empty():
 			continue
+		if _post_script != null and _post_script.is_ignored_group(hit.get("collider"), world_collision_exclude_group):
+			continue
 		var normal: Vector3 = hit["normal"]
 		var radius: float = maxf(float(b.radius) * world_collision_radius_scale, 0.001)
 		var target_w: Vector3 = (hit["position"] as Vector3) + normal * (radius + world_collision_margin)
 		var local_target := skel_inv * target_w
+		if b.is_dummy and bool(b.get("collision_only", false)):
+			var ep: int = int(b.get("edge_p_ci", -1))
+			var ec: int = int(b.get("edge_c_ci", -1))
+			if ep >= 0 and ec >= 0 and ep < _bones.size() and ec < _bones.size():
+				var t: float = float(b.get("sub_t", 0.5))
+				var push_local: Vector3 = local_target - (b.loc as Vector3)
+				_bones[ep].loc = (_bones[ep].loc as Vector3) + push_local * (1.0 - t)
+				_bones[ec].loc = (_bones[ec].loc as Vector3) + push_local * t
+				b.loc = (_bones[ep].loc as Vector3).lerp(_bones[ec].loc as Vector3, t)
+				b.prev_loc = b.loc
+				continue
 		b.loc = local_target
 		b.prev_loc = (b.prev_loc as Vector3).lerp(local_target, 0.5)
 
@@ -634,6 +840,7 @@ func _apply_collision_limits(sk: Skeleton3D) -> void:
 	_resolved_spheres = []
 	_resolved_capsules = []
 	_resolved_planes = []
+	_resolved_boxes = []
 	for lim in sphere_limits:
 		var res := _resolve_limit(sk, lim, _sphere_limit_script)
 		if res.is_empty() or float(lim.radius) <= 0.0:
@@ -664,6 +871,18 @@ func _apply_collision_limits(sk: Skeleton3D) -> void:
 			rot = rot,
 			normal = rot * Vector3(0, 1, 0),
 		})
+	for lim in box_limits:
+		var res := _resolve_limit(sk, lim, _box_limit_script)
+		if res.is_empty():
+			continue
+		var half: Vector3 = (lim.size as Vector3) * 0.5
+		if half.x <= 0.0 or half.y <= 0.0 or half.z <= 0.0:
+			continue
+		_resolved_boxes.append({
+			loc = res.loc,
+			rot = Basis(_limit_rot(res.rot, lim.offset_rotation_deg)),
+			half = half,
+		})
 	for b in _bones:
 		for s in _resolved_spheres:
 			b.loc = _core.adjust_by_sphere_limit(b.loc, b.radius, s.loc, s.radius, s.inner)
@@ -681,120 +900,10 @@ func _apply_self_collision() -> void:
 		self_collision_push_split_ratio)
 
 
-func _apply_sync_bones(sk: Skeleton3D) -> void:
-	if sync_bones.is_empty():
-		return
-	for entry in sync_bones:
-		if entry == null or not is_instance_valid(entry):
-			continue
-		if not bool(entry.get("enabled")):
-			continue
-		var src_name: String = String(entry.get("source_bone"))
-		var dst_name: String = String(entry.get("target_bone"))
-		var dst_i := sk.find_bone(dst_name)
-		if dst_i < 0 or src_name.is_empty():
-			continue
-		var src_xform := Transform3D.IDENTITY
-		var found := false
-		for b in _bones:
-			if int(b.index) >= 0 and String(b.name) == src_name:
-				src_xform = Transform3D(Basis(b.get("final_rot", b.pose_rot)), b.loc)
-				found = true
-				break
-		if not found:
-			var src_i := sk.find_bone(src_name)
-			if src_i < 0:
-				continue
-			src_xform = sk.get_bone_global_pose(src_i)
-		var offset: Variant = entry.get("offset")
-		var off: Transform3D = offset if offset is Transform3D else Transform3D.IDENTITY
-		sk.set_bone_global_pose_override(dst_i, src_xform * off, 1.0, false)
-		if not _written_bones.has(dst_i):
-			_written_bones.append(dst_i)
-
-
 func _update_debug_draw(sk: Skeleton3D) -> void:
-	if not debug_draw:
-		if _debug_mesh_instance != null and is_instance_valid(_debug_mesh_instance):
-			_debug_mesh_instance.visible = false
-			_debug_mesh.clear_surfaces()
-		return
-	_ensure_debug_nodes()
-	_debug_mesh_instance.visible = true
-	_debug_mesh_instance.global_transform = sk.global_transform
-	_debug_mesh.clear_surfaces()
-	for ci in range(_bones.size()):
-		var b: Dictionary = _bones[ci]
-		if b.is_dummy:
-			continue
-		if b.parent_idx >= 0:
-			var p: Dictionary = _bones[b.parent_idx]
-			_draw_line(p.loc, b.loc, Color(1, 1, 1))
-		_draw_line(b.pose_loc, b.loc, Color(1, 1, 1))
-		_draw_ring(b.loc, b.pose_rot, b.radius, Color(0, 1, 1))
-	for s in _resolved_spheres:
-		_draw_ring(s.loc, s.rot, s.radius, Color(1, 1, 0))
-	for c in _resolved_capsules:
-		_draw_ring(c.loc, c.rot, c.radius, Color(1, 0.5, 0))
-		var axis: Vector3 = (c.rot as Quaternion) * Vector3(0, 0, 1) * (float(c.length) * 0.5)
-		_draw_line(c.loc - axis, c.loc + axis, Color(1, 0.5, 0))
-	for p in _resolved_planes:
-		_draw_plane_quad(p)
-
-
-func _ensure_debug_nodes() -> void:
-	if _debug_mesh_instance != null and is_instance_valid(_debug_mesh_instance):
-		return
-	_debug_mesh = ImmediateMesh.new()
-	_debug_material = StandardMaterial3D.new()
-	_debug_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_debug_material.no_depth_test = true
-	_debug_material.vertex_color_use_as_albedo = true
-	_debug_mesh_instance = MeshInstance3D.new()
-	_debug_mesh_instance.mesh = _debug_mesh
-	_debug_mesh_instance.material_override = _debug_material
-	_debug_mesh_instance.top_level = true
-	add_child(_debug_mesh_instance)
-
-
-func _draw_line(from_v: Vector3, to_v: Vector3, color: Color) -> void:
-	_debug_mesh.surface_begin(Mesh.PRIMITIVE_LINES, _debug_material)
-	_debug_mesh.surface_set_color(color)
-	_debug_mesh.surface_add_vertex(from_v)
-	_debug_mesh.surface_set_color(color)
-	_debug_mesh.surface_add_vertex(to_v)
-	_debug_mesh.surface_end()
-
-
-func _draw_ring(center_v: Vector3, rot: Quaternion, radius: float, color: Color) -> void:
-	var axes := [Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(0, 0, 1)]
-	for i in range(3):
-		var u: Vector3 = rot * axes[(i + 1) % 3]
-		var v: Vector3 = rot * axes[(i + 2) % 3]
-		_debug_mesh.surface_begin(Mesh.PRIMITIVE_LINES, _debug_material)
-		for seg in range(16):
-			var a0 := TAU * float(seg) / 16.0
-			var a1 := TAU * float(seg + 1) / 16.0
-			_debug_mesh.surface_set_color(color)
-			_debug_mesh.surface_add_vertex(center_v + (u * cos(a0) + v * sin(a0)) * radius)
-			_debug_mesh.surface_set_color(color)
-			_debug_mesh.surface_add_vertex(center_v + (u * cos(a1) + v * sin(a1)) * radius)
-		_debug_mesh.surface_end()
-
-
-func _draw_plane_quad(p: Dictionary) -> void:
-	var rot: Quaternion = p.rot
-	var right: Vector3 = rot * Vector3(1, 0, 0) * 0.1
-	var up: Vector3 = rot * Vector3(0, 1, 0) * 0.1
-	var c: Vector3 = p.loc
-	var corners := [c - right - up, c + right - up, c + right + up, c - right + up]
-	_debug_mesh.surface_begin(Mesh.PRIMITIVE_LINES, _debug_material)
-	for i in range(4):
-		_debug_mesh.surface_set_color(Color(1, 0, 0))
-		_debug_mesh.surface_add_vertex(corners[i])
-		_debug_mesh.surface_set_color(Color(1, 0, 0))
-		_debug_mesh.surface_add_vertex(corners[(i + 1) % 4])
-	_debug_mesh.surface_end()
+	if _debug == null and _debug_draw_script != null:
+		_debug = _debug_draw_script.new()
+	_post_script.update_debug(_debug, self, sk, _bones, _resolved_spheres, _resolved_capsules, _resolved_planes, debug_draw)
 
 
 func _reset_to_pose(sk: Skeleton3D) -> void:
@@ -820,7 +929,26 @@ func _unwrite_override() -> void:
 	_written_sk = null
 
 
+func _apply_post_steps(sk: Skeleton3D) -> void:
+	_apply_box_limits()
+	_update_collision_only_dummies()
+	_apply_world_collision(sk)
+	if _post_script != null:
+		_post_script.apply_mesh_collisions(sk, self, _bones, mesh_collisions)
+	_apply_shared_collision()
+	_update_collision_only_dummies()
+	if planar_mode and _post_script != null:
+		_post_script.apply_planar(_bones, sk, plane_normal)
+
+
+func _apply_shared_collision() -> void:
+	if shared_collision_enabled and _post_script != null:
+		var others: Array = _post_script.collect_shared(_shared_registry, self, _skeleton)
+		_post_script.apply_shared(_bones, others)
+
+
 func _write_back(sk: Skeleton3D, influence: float) -> void:
+	var rag_src: Skeleton3D = (get_node_or_null(ragdoll_source) as Skeleton3D) if ragdoll_blend > 0.0 and ragdoll_source != NodePath("") else null
 	var single_child := {}
 	var written: Array[int] = []
 	for ci in range(_bones.size()):
@@ -847,6 +975,9 @@ func _write_back(sk: Skeleton3D, influence: float) -> void:
 					final_rot = _core.safe_between(cv, sv) * (b.pose_rot as Quaternion)
 		b.final_rot = final_rot
 		var xform := Transform3D(Basis(final_rot), b.loc)
+		if rag_src != null and _post_script != null:
+			xform = _post_script.blend_ragdoll(xform, String(b.name), rag_src, ragdoll_blend)
+		b.write_xform = xform
 		var pose_xform := Transform3D(Basis(b.pose_rot), b.pose_loc)
 		var blended := pose_xform.interpolate_with(xform, influence)
 		written.append(b.index)

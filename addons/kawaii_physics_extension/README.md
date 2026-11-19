@@ -21,14 +21,20 @@ Godot 4.7 аддон: `SkeletonModifier3D`-нода, имитирующая вт
 
 | Параметр | Тип | По умолчанию | Описание |
 |---|---|---|---|
-| `simulation_space` | enum | `COMPONENT` | `COMPONENT` / `WORLD` (полная инерция мира) |
+| `simulation_space` | enum | `COMPONENT` | `COMPONENT` / `WORLD` / `BASE_NODE` |
+| `ragdoll_blend` | float | 0.0 | Блендинг позы к ragdoll-источнику (0–1) |
+| `ragdoll_source` | NodePath | &"" | `Skeleton3D`-источник ragdoll-позы (например, скелет под `PhysicalBoneSimulator3D`) |
+| `base_node` | NodePath | &"" | Внешний узел-база для `BASE_NODE` (относительно модификатора) |
 | `root_bone` | StringName | `""` | Корень цепи; вниз собираются все дочерние кости |
 | `exclude_bones` | Array[StringName] | `[]` | Кость и всё её поддерево исключаются из цепи |
 | `settings` | KawaiiSettings | — | damping/stiffness/world-damping/collision_radius/limit_angle_deg + кривые stiffness/damping |
+| `preset` | KawaiiPreset | null | Пресет: settings + сабдивижн + коллизии + гравитация; применяется в `_ready` (или `apply_preset()`) |
 | `additional_root_bones` | Array[StringName] | `[]` | Дополнительные корни (независимые цепочки в одном модификаторе) |
 | `influence` | float 0–1 | 1.0 | Смешивание результата с позой (унаследовано от SkeletonModifier3D) |
 | `bone_subdivision_count` | int | 0 | Dummy-кости между реальными костями (0–10): плавнее изгибы и коллизии |
+| `bone_subdivision_collision_only` | bool | false | Dummy не интегрируются, стоят на линии концов и передают им выталкивание |
 | `bone_constraints` | Array[KawaiiBoneConstraint] | `[]` | Горизонтальные связи между костями разных цепочек (кость A, кость B, stiffness) |
+| `constraint_leaf_first` | bool | true | Решать констрейнты от листьев к корню (heuristic order) |
 | `sync_bones` | Array[KawaiiSyncBone] | `[]` | Кость-приёмник получает глобальную позу симулированной кости (+offset) |
 | `dummy_bone_length` | float | 0.0 | > 0 добавляет фиктивный кончик к листовым костям (влияет на поворот родителя) |
 | `target_framerate` | int 1–240 | 60 | Референсная частота для масштаба stiffness |
@@ -46,11 +52,46 @@ Godot 4.7 аддон: `SkeletonModifier3D`-нода, имитирующая вт
 | `self_collision_min_distance` | float | 0.01 | Минимальная дистанция пары |
 | `self_collision_radius_multiplier` | float | 1.0 | Множитель min_distance |
 | `self_collision_push_split_ratio` | float | 0.5 | Доля раздвижения на каждую кость пары |
-| `debug_draw` | bool | false | Отладочная отрисовка (см. ниже) |
+| `sleep_enabled` | bool | false | Авто-засыпание при низкой подвижности |
+| `sleep_motion_threshold` | float | 0.002 | Порог движения кости за шаг для сна |
+| `sleep_frames` | int | 5 | Сколько шагов ниже порога до сна |
+| `editor_preview` | bool | false | @tool-превью симуляции в редакторе (обновляйте с `active=false`) |
+| `debug_draw` | bool | false | Отладочная отрисовка: линии, кольца, скорости (см. ниже) |
 
-'## Ресурс KawaiiSyncBone
+'## Сабдивижн горизонтальных связей
+
+`KawaiiBoneConstraint`: `subdivision_count` (0–10) — число сферических проб вдоль линии между костями; `feedback_scale` (0–2) — сила переноса выталкивания на endpoint-кости. Коллайдер, проходящий между соседними полосами ткани, раздвигает реальные кости. Работает при `world_collision_enabled`.
+
+## Ресурс KawaiiBoxLimit
+
+`driving_bone`, `offset_location`, `offset_rotation_deg`, `size` (полные габариты), `enabled`: кости выталкиваются наружу бокса (после restore длин, до world collision) по оси минимального проникновения с учётом `collision_radius`.
+
+## Ресурс KawaiiSyncBone
 
 `source_bone` (симулированная кость), `target_bone` (кость-приёмник, может быть вне цепи), `offset` (Transform3D), `enabled`. После write-back target получает глобальную позу source с offset; target добавляется в список override и снимается при следующем шаге. Полезно для аксессуаров/отделённых частей.
+
+## Импульсы (hit reaction)
+
+`add_impulse(impulse: Vector3, bone: StringName = &"", falloff := true)` — одноразовый толчок: `impulse` это **приращение скорости** (м/с), применяется через `prev_loc` (Verlet). Без `bone` — по всем реальным костям с затуханием к кончику (`falloff`), с `bone` — ровно в указанную кость. Будит спящую цепь. Удобно для реакции на удар и порывов.
+
+## 2D/3D: planar_mode
+
+Для 2D/билборд-мобов: `planar_mode = true` + `plane_normal` (мировая нормаль плоскости, обычно (0,0,1) для сайдскроллера). После всех коллизий смещения костей проецируются на плоскость с сохранением длин звеньев — цепь колышется только в кадре, как 2D-физика. Для 3D-мобов режим выключен (полный 3D). Режим задаётся **на модификатор**, т.е. на цепь/моба.
+
+## Коллизия с телом (KawaiiMeshCollision)
+
+`target_path` (относительно модификатора, `NodePath`), `bone_names` (пусто = все кости), `radius`, `enabled`. Из target-скелета берутся мировые позиции костей как сферы; кости цепи выталкиваются наружу (радиус сферы + `collision_radius`). Нужно для 3D-моба: своё тело под одеждой/волосами не попадает в world collision (предки исключены), а этот ресурс его возвращает.
+
+## Пресеты (KawaiiPreset)
+
+`settings` (копируется при применении), `bone_subdivision_count`, `bone_subdivision_collision_only`, `world_collision_enabled`, `self_collision_enabled`, `gravity`, `constant_force`. Назначь в `KawaiiPhysics.preset` — применится в `_ready`, или вызови `apply_preset(p)`. Удобно для тел/волос/одежды.
+
+## Внешние силы (KawaiiExternalForce)
+
+База `KawaiiExternalForce`: `enabled`, `sample(time, world_pos) -> Vector3` (мир). Наследники:
+- `KawaiiCurveForce` — `direction`, `strength`, `curve` (0–1), `time_scale`, `phase`: сила по кривой во времени (анимированные порывы);
+- `KawaiiConstantForce` — `force` (мировые единицы).
+Список `external_forces` сэмплируется **по-костно** вместе с ветром/зонами; не зависит от `wind_scale`.
 
 ## Кривые в KawaiiSettings
 
@@ -60,9 +101,40 @@ Godot 4.7 аддон: `SkeletonModifier3D`-нода, имитирующая вт
 
 `enabled`, `direction` (мировой), `strength`, `turbulence` (0–1), `noise_scale`, `noise_speed`, `noise_seed` (детерминированный FastNoiseLite). `sample(time, world_pos)` отдаёт силу в мировом пространстве; модификатор добавляет её к `gravity + constant_force` с множителем `wind_scale`. Порывы = шум по времени/позиции; сила ветра равномерна по цепи (по-костный градиент — вне MVP).
 
+## Сабдивижн горизонтальных связей
+
+`KawaiiBoneConstraint`: `subdivision_count` (0–10) — число сферических проб вдоль линии между костями; `feedback_scale` (0–2) — сила переноса выталкивания на endpoint-кости. Коллайдер, проходящий между соседними полосами ткани, раздвигает реальные кости. Работает при `world_collision_enabled`.
+
+## Ресурс KawaiiBoxLimit
+
+`driving_bone`, `offset_location`, `offset_rotation_deg`, `size` (полные габариты), `enabled`: кости выталкиваются наружу бокса (после restore длин, до world collision) по оси минимального проникновения с учётом `collision_radius`.
+
 ## Ресурс KawaiiSyncBone
 
 `source_bone` (симулированная кость), `target_bone` (кость-приёмник, может быть вне цепи), `offset` (Transform3D), `enabled`. После write-back target получает глобальную позу source с offset; target добавляется в список override и снимается при следующем шаге. Полезно для аксессуаров/отделённых частей.
+
+## Импульсы (hit reaction)
+
+`add_impulse(impulse: Vector3, bone: StringName = &"", falloff := true)` — одноразовый толчок: `impulse` это **приращение скорости** (м/с), применяется через `prev_loc` (Verlet). Без `bone` — по всем реальным костям с затуханием к кончику (`falloff`), с `bone` — ровно в указанную кость. Будит спящую цепь. Удобно для реакции на удар и порывов.
+
+## 2D/3D: planar_mode
+
+Для 2D/билборд-мобов: `planar_mode = true` + `plane_normal` (мировая нормаль плоскости, обычно (0,0,1) для сайдскроллера). После всех коллизий смещения костей проецируются на плоскость с сохранением длин звеньев — цепь колышется только в кадре, как 2D-физика. Для 3D-мобов режим выключен (полный 3D). Режим задаётся **на модификатор**, т.е. на цепь/моба.
+
+## Коллизия с телом (KawaiiMeshCollision)
+
+`target_path` (относительно модификатора, `NodePath`), `bone_names` (пусто = все кости), `radius`, `enabled`. Из target-скелета берутся мировые позиции костей как сферы; кости цепи выталкиваются наружу (радиус сферы + `collision_radius`). Нужно для 3D-моба: своё тело под одеждой/волосами не попадает в world collision (предки исключены), а этот ресурс его возвращает.
+
+## Пресеты (KawaiiPreset)
+
+`settings` (копируется при применении), `bone_subdivision_count`, `bone_subdivision_collision_only`, `world_collision_enabled`, `self_collision_enabled`, `gravity`, `constant_force`. Назначь в `KawaiiPhysics.preset` — применится в `_ready`, или вызови `apply_preset(p)`. Удобно для тел/волос/одежды.
+
+## Внешние силы (KawaiiExternalForce)
+
+База `KawaiiExternalForce`: `enabled`, `sample(time, world_pos) -> Vector3` (мир). Наследники:
+- `KawaiiCurveForce` — `direction`, `strength`, `curve` (0–1), `time_scale`, `phase`: сила по кривой во времени (анимированные порывы);
+- `KawaiiConstantForce` — `force` (мировые единицы).
+Список `external_forces` сэмплируется **по-костно** вместе с ветром/зонами; не зависит от `wind_scale`.
 
 ## Кривые в KawaiiSettings
 
@@ -102,6 +174,11 @@ red-квадрат ±0.1. Рисуется в модельном простра�
 (`MeshInstance3D`-ребёнок модификатора, unshaded/no-depth/vertex-color).
 
 ## World collision
+
+- Луч от ближайшего реального предка к кости; выталкивание по нормали (`radius + margin`); предки-`CollisionObject3D` исключаются автоматически.
+- `world_collision_ccd`: swept-sphere от `prev_loc` к `loc` — ловит тонкие стены между кадрами.
+- `world_collision_exclude_group`: коллайдеры (и их дети) из этой группы игнорируются — «своё тело»/свои цепи.
+- Backstop: `KawaiiSphereLimit` с `limit_type = OUTER` на кости тела — кости цепи не проваливаются в тело (готовый рецепт «задней стенки»).
 
 Включается `world_collision_enabled = true`. Для каждой не-корневой кости пускается луч из позиции родителя в позицию кости; при попадании кость ставится в `hit.position + hit.normal * (radius + margin)`. Радиус — из `KawaiiSettings.collision_radius`, множитель — `world_collision_radius_scale`. Предки-`CollisionObject3D` (например, капсула персонажа) автоматически исключаются. Применяется **после** восстановления длин костей, чтобы выталкивание не отменялось.
 
@@ -151,19 +228,35 @@ red-квадрат ±0.1. Рисуется в модельном простра�
 
 ## KawaiiPhysicsManager (LOD и квота)
 
-Нода `KawaiiPhysicsManager` (не autoload — кладётся в сцену): находит все `KawaiiPhysics` в группе `kawaii_physics`, раз в `update_interval` сортирует по дистанции до `target` (или камеры) и держит включёнными не более `max_active_chains` цепей в радиусе `lod_distance`. Выключение — через `active = false` (движок не вызывает модификатор, 0 стоимости); при возврате — `reset_dynamics()` без скачка. Модификаторы, у которых `active` был выставлен вручную (например, ручной шаг демо), не трогаются. Без `target` и камеры (headless) — безопасный no-op.
-Дистанция считается до **центра цепи** (`KawaiiPhysics.get_chain_center()`, среднее мировых позиций реальных костей), а не до позиции скелета. Встроенная статистика: `KawaiiPhysics.last_step_usec` (µs последнего шага), `KawaiiPhysicsManager.get_stats()` → `chains/active/step_usec/step_usec_ema`, опция `print_stats`.
+Нода `KawaiiPhysicsManager` (не autoload — кладётся в сцену): находит все `KawaiiPhysics` в группе `kawaii_physics`, раз в `update_interval` сортирует по дистанции до `target` (или камеры) и держит включёнными не более `max_active_chains` цепей в радиусе `lod_distance`. При `frame_budget_usec > 0` дополнительно гасит самые дальние активные цепи, пока сумма их `step_usec_ema` не влезет в бюджет (ближайшая всегда остаётся). Выключение — через `active = false` (движок не вызывает модификатор, 0 стоимости); при возврате — `reset_dynamics()` без скачка. Ручные цепи (`active=false`, шаг через `step_manual`) управляются через `lod_enabled`; движковые — через `active`. `cull_by_view` дополнительно отсекает цепи вне фрустума камеры. Без `target` и камеры (headless) — безопасный no-op.
+Дистанция считается до **центра цепи** (`KawaiiPhysics.get_chain_center()`, среднее мировых позиций реальных костей), а не до позиции скелета. Встроенная статистика: `KawaiiPhysics.last_step_usec` (µs последнего шага) и `step_usec_ema`, `KawaiiPhysicsManager.get_stats()` → `chains/active/step_usec/step_usec_ema/budget_skipped/sleeping`, опция `print_stats`. Сон: `sleep_enabled` — цепь засыпает при `sleep_frames` шагах с движением ниже `sleep_motion_threshold` и пропускает шаги (0 стоимости), просыпается от движения скелета/смены позы или `wake()`. Per-LOD настройки: `lod_steps` (ступени дистанции) + `lod_presets` (KawaiiPreset на ступень) — при переходе ступени пресет применяется.
+
+## Shared collision (цепи одного скелета)
+
+`shared_collision_enabled`: модификаторы одного `Skeleton3D` регистрируются в статическом реестре; кости реальных цепей расталкиваются как сферы (`radius` + `radius`), каждый модификатор двигает свои кости на половину проникновения и восстанавливает длины звеньев. Включай на обеих цепях для симметрии. В редакторе не регистрируется.
+
+## KawaiiRagdollBuilder (физический ragdoll)
+
+Утилита `KawaiiRagdollBuilder` (static): `build(sk, only)` создаёт `PhysicalBoneSimulator3D` + `PhysicalBone3D` на выбранные кости — `bone_name`, поза кости, pin-joint (`JOINT_TYPE_PIN`), сфера-коллайдер (радиус от длины кости); `start(sim)` запускает симуляцию **с именами костей** (без этого физические кости не стартуют); `pair_distances(sim)` — контроль длин звеньев. Проверено на Sammy: суставы держат длины (0.3/0.3; хвост 0.1428; волосы 0.08–0.09), ragdoll blend к физическому источнику — 4/4 кости.
+
+## Ragdoll blend
+
+`ragdoll_blend` + `ragdoll_source`: после симуляции поза каждой кости цепи смешивается с глобальной позой одноимённой кости в `Skeleton3D`-источнике (origin lerp, basis slerp). `ragdoll_source` может быть скелетом под `PhysicalBoneSimulator3D` (отдельный инстанс) — так Kawaii-цепь плавно отдаёт управление физическому ragdoll. При `ragdoll_blend = 1` выход равен позе источника; при 0 — симуляции. Позиции/повороты источника берутся в пространстве скелета-источника (риги должны совпадать по именам костей). Если у скелета-источника есть дочерний `PhysicalBoneSimulator3D`, блендинг читает трансформы `PhysicalBone3D` (по `bone_name`) — так работает связка с настоящим физическим ragdoll (позы скелета там пишутся через override и `get_bone_global_pose` их не видит).
+
+## Ручной шаг и менеджер
+
+Если меши висят на `BoneAttachment3D` и движковый путь не двигает их, шагай вручную: `mod.active = false`, в своём `_process` вызывай `mod.step_manual(delta)` (учитывает `lod_enabled`) и пиши позы обратно. `KawaiiPhysicsManager` управляет и движковыми (`active=true`), и ручными цепями: для ручных он переключает `lod_enabled` (LOD/квота/бюджет/видимость через `cull_by_view`), а `step_manual` пропускает выключенные. `debug_draw` в редакторе — после Reload Project (класс `KawaiiDebugDraw` загружается динамически).
 
 ## Известные ограничения (проверено)
 
-- **Ветер** (`KawaiiWind`/`KawaiiWindZone`) сэмплируется по-костно (у каждой кости своя сила), зоны box/sphere с falloff; отдельного высотного профиля силы (градиент по высоте) нет — его можно собрать из нескольких зон.
-- **Субдивижн**: dummy-кости полноценно интегрируются; режима «collision-only» (UE `bBoneSubdivisionCollisionOnly`) и передачи смещения с dummy на концы нет. Рёбра к dummy-кончику и ветвления (кость с 2+ детьми) не сабдивятся.
-- **Горизонтальные связи** — простые дистанционные констрейнты: без сабдивижна вдоль связи и без bridge-переноса (UE `BoneConstraintSubdivisionCount`).
-- **`_anim_global`** для костей внутри цепи читает `sk.get_bone_pose` (анимацию), поэтому override другого engine-driven `KawaiiPhysics` на той же цепи не учитывается; для предков вне цепи используется `get_bone_global_pose` (override учитывается).
-- **SimulationSpace**: `simulation_space` = `COMPONENT` (по умолчанию; скелет-локальные координаты + компенсация движения по `world_damping_*`) или `WORLD` (полная компенсация движения/поворота скелета — жёсткая инерция, `world_damping_*` игнорируется; цепь всё равно тянется ограничением длин). `BASE_BONE` не реализован и не нужен в текущей архитектуре: все кости скелета уже в его пространстве, анимация base-кости уже входит в `pose`; base-кость имела бы смысл только для внешнего аттача. Проверено на тестовой сцене пользователя и GUT.
-- Нет: editor-preview (осознанно отложен: требует @tool-режима и шага в редакторе; ценность ниже риска), SyncBones, кривых stiffness/damping, box-лимитов, mesh collision, cloth constraints, ragdoll, подшагов, shared collision, физического слоя коллизий.
-- `settings` создаётся в `_ready` (не в `_init`): `KawaiiPhysics.new().settings == null` до входа в дерево.
-- В игре новые возможности (F1–F4) пока ни к чему не подключены — по договорённости сначала аддон.
+- `simulation_space = WORLD` — политика инерции (полная компенсация), не смена координат для лимитов/коллизий; `BASE_NODE` — компенсация от внешнего узла.
+- Субдивижн: collision-only есть; рёбра к dummy-кончику и ветвления (2+ детей) не сабдивятся; горизонтальные констрейнты — с subdivision/bridge-фидбеком.
+- `_anim_global` не видит override других engine-модификаторов на той же цепи (для предков вне цепи видит).
+- Ragdoll: есть `ragdoll_blend` + `ragdoll_source` (блендинг к позе отдельного скелета, например под `PhysicalBoneSimulator3D`); готового физического ragdoll-скелета аддон не создаёт.
+- Twist не выражается точечным солвером (есть `limit_angle_deg` = bend/swing); pose-множители — только `gravity_scale`; warping заменён порогом телепорта; bone scaling уже в pose-длинах; GPU/deterministic не портируем.
+- Гизмо лимитов в редакторе нет (лимиты видны в `debug_draw`/превью).
+- `settings` создаётся в `_ready` (не в `_init`); в редакторе для `editor_preview` используется внутренний `_tool_settings`, сцена не помечается грязной.
+- Менеджер в сцены по умолчанию не добавлен; ручные цепи (`active=false`) управляются через `lod_enabled`, движковые — через `active`; состав группы пересканируется в `update_lod`.
 
 ## Квирки Godot 4.7
 
@@ -189,7 +282,24 @@ red-квадрат ±0.1. Рисуется в модельном простра�
 - `tests/test_kawaii_moving_skeleton.gd` — движущийся/вращающийся скелет, телепорт
 - `tests/test_kawaii_simulation_space.gd` — Component vs World на скачке скелета
 - `tests/test_kawaii_curves.gd` — кривые stiffness/damping по длине цепи
-- `tests/test_kawaii_sync_bones.gd` — SyncBones (target вне цепи, выключение, нет target)\n- `tests/test_kawaii_bone_constraints.gd` — горизонтальные связи
+- `tests/test_kawaii_sync_bones.gd` — SyncBones (target вне цепи, выключение, нет target)
+- `tests/test_kawaii_sleep.gd` — сон/пропуск шагов/пробуждение
+- `tests/test_kawaii_collision_only.gd` — collision-only сабдивижн и фидбек
+- `tests/test_kawaii_substepping.gd` — число подшагов/кламп, стабильность на dt=0.1
+- `tests/test_kawaii_box_limit.gd` — бокс-лимит выталкивает кости, выключение
+- `tests/test_kawaii_planar.gd` — planar-режим держит цепь в плоскости, без него — нет
+- `tests/test_kawaii_impulse.gd` — импульс толкает цепь, будит сон
+- `tests/test_kawaii_constraint_subdivision.gd` — bridge-фидбек раздвигает концы
+- `tests/test_kawaii_external_forces.gd` — curve/constant силы и отклонение цепи
+- `tests/test_kawaii_capsule_preset.gd` — capsule-зона, применение пресета
+- `tests/test_kawaii_shared_collision.gd` — цепи одного скелета расталкиваются
+- `tests/test_kawaii_prediction_gravity.gd` — gravity_scale/prediction_scale
+- `tests/test_kawaii_game_scenes.gd` — интеграция `KawaiiSammy.tscn` (18 цепей) и `KawaiiHuman.tscn` (ragdoll-цепи)
+- `tests/test_kawaii_ragdoll_blend.gd` — ragdoll_blend заменяет позу позой источника
+- `tests/test_kawaii_manager.gd` — LOD/квота/статистика/бюджет/per-LOD пресеты
+- Скрипт `@tool`: `editor_preview = true` шагает симуляцию в редакторе; `debug_draw` рисует и скорости (голубые отрезки)
+- `tests/test_kawaii_ccd_groups.gd` — CCD через тонкую стену, группа-исключение
+- `tests/test_kawaii_mesh_collision.gd` — кость выталкивается из сферы тела, выключение\n- `tests/test_kawaii_bone_constraints.gd` — горизонтальные связи
 - `tests/test_kawaii_physics_node.gd` — 39 нодовых тестов (цепь, гравитация,
   influence-бленд без накопления, телепорт-пороги, смена root/exclude/dummy в
   рантайме (включая очистку override костей, покинувших цепь при пересборке),
